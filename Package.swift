@@ -1,0 +1,43 @@
+// swift-tools-version: 6.0
+// The swift-tools-version declares the minimum version of Swift required to build this package.
+
+import PackageDescription
+
+let package = Package(
+    name: "FlowWhispr",
+    platforms: [
+        .macOS(.v14)
+    ],
+    products: [
+        .library(
+            name: "FlowWhispr",
+            targets: ["FlowWhispr"]
+        ),
+    ],
+    targets: [
+        // C wrapper for the Rust FFI
+        .target(
+            name: "CFlowWhispr",
+            path: "Sources/CFlowWhispr",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                // Link to the Rust static library
+                .unsafeFlags([
+                    "-L", "flowwhispr-core/target/release",
+                    "-lflowwhispr_core"
+                ]),
+                // System frameworks needed by the Rust library
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+            ]
+        ),
+        // Swift wrapper
+        .target(
+            name: "FlowWhispr",
+            dependencies: ["CFlowWhispr"],
+            path: "Sources/FlowWhispr"
+        ),
+    ]
+)

@@ -7,5 +7,7 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 
+flowwhispr-core/target
+
 .idea
 .env

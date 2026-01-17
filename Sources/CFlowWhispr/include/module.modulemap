@@ -1,0 +1,5 @@
+module CFlowWhispr {
+    header "flowwhispr.h"
+    link "flowwhispr_core"
+    export *
+}
