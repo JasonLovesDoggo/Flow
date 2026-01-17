@@ -27,7 +27,7 @@ struct OnboardingView: View {
         var title: String {
             switch self {
             case .welcome:
-                return "Welcome to FlowWispr"
+                return "Welcome to Flow"
             case .apiKey:
                 return "Connect Your API Key"
             case .accessibility:
@@ -83,7 +83,7 @@ struct OnboardingView: View {
         switch step {
         case .welcome:
             VStack(alignment: .leading, spacing: FW.spacing12) {
-                Text("FlowWispr turns quick dictation into clean text, fast.")
+                Text("Flow turns quick dictation into clean text, fast.")
                     .font(.subheadline)
                     .foregroundStyle(FW.textSecondary)
 
@@ -123,7 +123,7 @@ struct OnboardingView: View {
 
         case .accessibility:
             VStack(alignment: .leading, spacing: FW.spacing16) {
-                Text("To listen for your hotkey, FlowWispr needs Accessibility access. You control this anytime in System Settings.")
+                Text("To listen for your hotkey, Flow needs Accessibility access. You control this anytime in System Settings.")
                     .font(.subheadline)
                     .foregroundStyle(FW.textSecondary)
 

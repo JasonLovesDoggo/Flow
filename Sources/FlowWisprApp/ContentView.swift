@@ -56,7 +56,7 @@ struct ContentView: View {
                 Image(systemName: "waveform")
                     .font(.title2)
                     .foregroundStyle(FW.accentGradient)
-                Text("FlowWispr")
+                Text("Flow")
                     .font(.title2.weight(.semibold))
             }
 

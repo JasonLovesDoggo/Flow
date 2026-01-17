@@ -43,7 +43,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Open FlowWispr") {
+            Button("Open Flow") {
                 WindowManager.openMainWindow()
             }
 

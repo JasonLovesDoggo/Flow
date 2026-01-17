@@ -1,6 +1,6 @@
-# flowwispr
+# Flow
 
-Flowwispr is a voice dictation app that captures audio, transcribes speech, and formats it into clean text. It supports shortcuts, learning, and tone that adapts per app.
+Flow is a voice dictation app that captures audio, transcribes speech, and formats it into clean text. It supports shortcuts, learning, and tone that adapts per app.
 
 
 
@@ -22,8 +22,8 @@ The rest of the app lives here in the repo root.
 ## Setup
 
 ```sh
-git clone https://github.com/JasonLovesDoggo/flowwispr.git
-cd flowwispr
+git clone https://github.com/JasonLovesDoggo/flow.git
+cd flow
 cd flowwispr-core
 cargo build
 cd ..

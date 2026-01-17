@@ -217,7 +217,7 @@ struct AboutSection: View {
             }
 
             VStack(spacing: FW.spacing4) {
-                Text("FlowWispr")
+                Text("Flow")
                     .font(.title3.weight(.semibold))
 
                 Text("v1.0.0")
