@@ -230,7 +230,7 @@ struct AboutSection: View {
                 .foregroundStyle(FW.textSecondary)
 
             HStack(spacing: FW.spacing24) {
-                Link(destination: URL(string: "https://flowwispr.app")!) {
+                Link(destination: URL(string: "https://flowwispr.vercel.app/")!) {
                     HStack(spacing: FW.spacing4) {
                         Image(systemName: "globe")
                         Text("Website")
@@ -239,7 +239,7 @@ struct AboutSection: View {
                     .foregroundStyle(FW.accent)
                 }
 
-                Link(destination: URL(string: "https://github.com/json/flowwispr")!) {
+                Link(destination: URL(string: "https://github.com/jasonlovesdoggo/flow")!) {
                     HStack(spacing: FW.spacing4) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                         Text("GitHub")

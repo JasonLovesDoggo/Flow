@@ -246,12 +246,12 @@ mod tests {
 
         engine.add_shortcut(Shortcut::new(
             "My GitHub".to_string(),
-            "github.com/json".to_string(),
+            "github.com/jasonlovesdoggo/flow".to_string(),
         ));
 
         let (result, triggered) = engine.process("visit MY GITHUB for code");
 
-        assert_eq!(result, "visit github.com/json for code");
+        assert_eq!(result, "visit github.com/jasonlovesdoggo/flow for code");
         assert_eq!(triggered.len(), 1);
     }
 
