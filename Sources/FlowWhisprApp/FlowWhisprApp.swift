@@ -2,23 +2,24 @@
 // FlowWhisprApp.swift
 // FlowWhispr
 //
-// Main app entry point.
+// Main app entry point with single-window architecture.
 //
 
 import SwiftUI
 
 @main
 struct FlowWhisprApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState()
 
     var body: some Scene {
         // main window
         WindowGroup {
-            MainView()
+            ContentView()
                 .environmentObject(appState)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 540, height: 520)
+        .defaultSize(width: WindowSize.width, height: WindowSize.height)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -32,26 +33,6 @@ struct FlowWhisprApp: App {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(appState.isRecording ? .red : .primary)
         }
-        .menuBarExtraStyle(.window)
-
-        // settings
-        Settings {
-            SettingsView()
-                .environmentObject(appState)
-        }
-
-        // shortcuts window
-        Window("Shortcuts", id: "shortcuts") {
-            ShortcutsView()
-                .environmentObject(appState)
-        }
-        .windowResizability(.contentSize)
-
-        // recording overlay
-        Window("Recording", id: "recording-overlay") {
-            RecordingOverlay()
-                .environmentObject(appState)
-        }
-        .windowResizability(.contentSize)
+        .menuBarExtraStyle(.menu)
     }
 }

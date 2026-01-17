@@ -9,11 +9,6 @@ import AppKit
 import Combine
 import FlowWhispr
 import Foundation
-import KeyboardShortcuts
-
-extension KeyboardShortcuts.Name {
-    static let toggleRecording = Self("toggleRecording", default: .init(.space, modifiers: [.option]))
-}
 
 /// Main app state observable
 @MainActor
@@ -36,12 +31,6 @@ final class AppState: ObservableObject {
     /// Current app category
     @Published var currentCategory: AppCategory = .unknown
 
-    /// Show settings window
-    @Published var showSettings = false
-
-    /// Show shortcuts window
-    @Published var showShortcuts = false
-
     /// API key configured
     @Published var isConfigured = false
 
@@ -54,12 +43,13 @@ final class AppState: ObservableObject {
     /// Workspace observer for app changes
     private var workspaceObserver: NSObjectProtocol?
     private var recordingTimer: Timer?
+    private var globeKeyHandler: GlobeKeyHandler?
 
     init() {
         self.engine = FlowWhispr()
         self.isConfigured = engine.isConfigured
 
-        setupKeyboardShortcuts()
+        setupGlobeKey()
         setupWorkspaceObserver()
         updateCurrentApp()
     }
@@ -73,10 +63,10 @@ final class AppState: ObservableObject {
         recordingTimer = nil
     }
 
-    // MARK: - Keyboard Shortcuts
+    // MARK: - Globe Key
 
-    private func setupKeyboardShortcuts() {
-        KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
+    private func setupGlobeKey() {
+        globeKeyHandler = GlobeKeyHandler { [weak self] in
             Task { @MainActor in
                 self?.toggleRecording()
             }
@@ -140,7 +130,6 @@ final class AppState: ObservableObject {
     func startRecording() {
         guard engine.isConfigured else {
             errorMessage = "Please configure your API key in Settings"
-            showSettings = true
             return
         }
 

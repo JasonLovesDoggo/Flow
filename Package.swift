@@ -18,9 +18,6 @@ let package = Package(
             targets: ["FlowWhisprApp"]
         ),
     ],
-    dependencies: [
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
-    ],
     targets: [
         // C wrapper for the Rust FFI
         .target(
@@ -51,7 +48,6 @@ let package = Package(
             name: "FlowWhisprApp",
             dependencies: [
                 "FlowWhispr",
-                "KeyboardShortcuts",
             ],
             path: "Sources/FlowWhisprApp"
         ),
