@@ -68,15 +68,6 @@ jobs:
           lipo -info target/release/libflowwispr_core.a
           ls -lh target/release/libflowwispr_core.a
 
-      - name: Update Package.swift for release build
-        run: |
-          # Modify Package.swift to use release build instead of debug
-          sed -i '' 's|flowwispr-core/target/debug|flowwispr-core/target/release|g' Package.swift
-
-          # Verify the change
-          echo "Modified Package.swift linker settings:"
-          grep -A 2 "linkerSettings" Package.swift
-
       - name: Build Swift universal binary
         run: |
           swift build -c release --arch arm64 --arch x86_64

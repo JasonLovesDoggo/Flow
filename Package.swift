@@ -1,7 +1,12 @@
 // swift-tools-version: 5.10
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
+import Foundation
 import PackageDescription
+
+let packageRoot = URL(fileURLWithPath: #file).deletingLastPathComponent().path
+let debugLibPath = "\(packageRoot)/flowwispr-core/target/debug/libflowwispr_core.a"
+let releaseLibPath = "\(packageRoot)/flowwispr-core/target/release/libflowwispr_core.a"
 
 let package = Package(
     name: "FlowWispr",
@@ -29,10 +34,8 @@ let package = Package(
             publicHeadersPath: "include",
             linkerSettings: [
                 // Link to the Rust static library
-                .unsafeFlags([
-                    "-L", "flowwispr-core/target/debug",
-                    "-lflowwispr_core"
-                ]),
+                .unsafeFlags([debugLibPath], .when(configuration: .debug)),
+                .unsafeFlags([releaseLibPath], .when(configuration: .release)),
                 // System frameworks needed by the Rust library
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("AudioToolbox"),
@@ -55,6 +58,7 @@ let package = Package(
             ],
             path: "Sources/FlowWisprApp",
             resources: [
+                .process("Resources"),
                 .copy("../../menubar.svg"),
             ]
         ),
