@@ -16,12 +16,13 @@ use parking_lot::Mutex;
 use tokio::runtime::Runtime;
 use tracing::{debug, error};
 
+use crate::apps::AppTracker;
 use crate::audio::{AudioCapture, CaptureState};
 use crate::learning::LearningEngine;
-use crate::modes::{WritingMode, WritingModeEngine};
+use crate::modes::{StyleLearner, WritingMode, WritingModeEngine};
 use crate::providers::{
-    CompletionProvider, CompletionRequest, OpenAICompletionProvider, OpenAITranscriptionProvider,
-    TranscriptionProvider, TranscriptionRequest,
+    AnthropicCompletionProvider, CompletionProvider, CompletionRequest, OpenAICompletionProvider,
+    OpenAITranscriptionProvider, TranscriptionProvider, TranscriptionRequest,
 };
 use crate::shortcuts::ShortcutsEngine;
 use crate::storage::Storage;
@@ -37,6 +38,8 @@ pub struct FlowWhisprHandle {
     shortcuts: ShortcutsEngine,
     learning: LearningEngine,
     modes: Mutex<WritingModeEngine>,
+    app_tracker: AppTracker,
+    style_learner: Mutex<StyleLearner>,
 }
 
 /// Result callback type for async operations
@@ -91,6 +94,8 @@ pub extern "C" fn flowwhispr_init(db_path: *const c_char) -> *mut FlowWhisprHand
         ShortcutsEngine::from_storage(&storage).unwrap_or_else(|_| ShortcutsEngine::new());
     let learning = LearningEngine::from_storage(&storage).unwrap_or_else(|_| LearningEngine::new());
     let modes = WritingModeEngine::new(WritingMode::Casual);
+    let app_tracker = AppTracker::new();
+    let style_learner = StyleLearner::new();
 
     let handle = FlowWhisprHandle {
         runtime,
@@ -101,6 +106,8 @@ pub extern "C" fn flowwhispr_init(db_path: *const c_char) -> *mut FlowWhisprHand
         shortcuts,
         learning,
         modes: Mutex::new(modes),
+        app_tracker,
+        style_learner: Mutex::new(style_learner),
     };
 
     debug!("FlowWhispr engine initialized");
@@ -517,4 +524,259 @@ pub extern "C" fn flowwhispr_set_api_key(
     handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
 
     true
+}
+
+// ============ App Tracking ============
+
+/// Set the currently active app (call from Swift when app switches)
+/// Returns the suggested writing mode for the app
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_set_active_app(
+    handle: *mut FlowWhisprHandle,
+    app_name: *const c_char,
+    bundle_id: *const c_char,
+    window_title: *const c_char,
+) -> u8 {
+    if app_name.is_null() {
+        return 1; // default to casual
+    }
+
+    let handle = unsafe { &*handle };
+
+    let name = match unsafe { CStr::from_ptr(app_name) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return 1,
+    };
+
+    let bid = if bundle_id.is_null() {
+        None
+    } else {
+        unsafe { CStr::from_ptr(bundle_id) }
+            .to_str()
+            .ok()
+            .map(String::from)
+    };
+
+    let title = if window_title.is_null() {
+        None
+    } else {
+        unsafe { CStr::from_ptr(window_title) }
+            .to_str()
+            .ok()
+            .map(String::from)
+    };
+
+    let _context = handle.app_tracker.set_active_app(name, bid, title);
+
+    // return suggested mode
+    match handle.app_tracker.suggested_mode() {
+        WritingMode::Formal => 0,
+        WritingMode::Casual => 1,
+        WritingMode::VeryCasual => 2,
+        WritingMode::Excited => 3,
+    }
+}
+
+/// Get the current app's category
+/// Returns: 0=Email, 1=Slack, 2=Code, 3=Documents, 4=Social, 5=Browser, 6=Terminal, 7=Unknown
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_app_category(handle: *mut FlowWhisprHandle) -> u8 {
+    let handle = unsafe { &*handle };
+
+    use crate::types::AppCategory;
+    match handle.app_tracker.current_category() {
+        AppCategory::Email => 0,
+        AppCategory::Slack => 1,
+        AppCategory::Code => 2,
+        AppCategory::Documents => 3,
+        AppCategory::Social => 4,
+        AppCategory::Browser => 5,
+        AppCategory::Terminal => 6,
+        AppCategory::Unknown => 7,
+    }
+}
+
+/// Get current app name (caller must free with flowwhispr_free_string)
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_current_app(handle: *mut FlowWhisprHandle) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    match handle.app_tracker.current_app() {
+        Some(ctx) => match CString::new(ctx.app_name) {
+            Ok(cstr) => cstr.into_raw(),
+            Err(_) => ptr::null_mut(),
+        },
+        None => ptr::null_mut(),
+    }
+}
+
+// ============ Style Learning ============
+
+/// Report edited text to learn user's style for current app
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_learn_style(
+    handle: *mut FlowWhisprHandle,
+    edited_text: *const c_char,
+) -> bool {
+    if edited_text.is_null() {
+        return false;
+    }
+
+    let handle = unsafe { &*handle };
+
+    let text = match unsafe { CStr::from_ptr(edited_text) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    let app_name = match handle.app_tracker.current_app() {
+        Some(ctx) => ctx.app_name,
+        None => return false,
+    };
+
+    let mut learner = handle.style_learner.lock();
+    learner.observe_with_storage(&app_name, text, &handle.storage);
+
+    true
+}
+
+/// Get suggested mode based on learned style for current app
+/// Returns: 0=Formal, 1=Casual, 2=VeryCasual, 3=Excited, 255=no suggestion
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_style_suggestion(handle: *mut FlowWhisprHandle) -> u8 {
+    let handle = unsafe { &*handle };
+
+    let app_name = match handle.app_tracker.current_app() {
+        Some(ctx) => ctx.app_name,
+        None => return 255,
+    };
+
+    let learner = handle.style_learner.lock();
+    match learner.suggest_mode(&app_name) {
+        Some(suggestion) => match suggestion.suggested_mode {
+            WritingMode::Formal => 0,
+            WritingMode::Casual => 1,
+            WritingMode::VeryCasual => 2,
+            WritingMode::Excited => 3,
+        },
+        None => 255,
+    }
+}
+
+// ============ Extended Stats ============
+
+/// Get user stats as JSON (caller must free with flowwhispr_free_string)
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_stats_json(handle: *mut FlowWhisprHandle) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    let stats = serde_json::json!({
+        "total_transcriptions": handle.storage.get_transcription_count().unwrap_or(0),
+        "total_duration_ms": handle.storage.get_total_transcription_time_ms().unwrap_or(0),
+        "shortcut_count": handle.shortcuts.count(),
+        "correction_count": handle.learning.cache_size(),
+    });
+
+    match CString::new(stats.to_string()) {
+        Ok(cstr) => cstr.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+// ============ Provider Configuration ============
+
+/// Set the Anthropic API key and switch to Anthropic for completion
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_set_anthropic_key(
+    handle: *mut FlowWhisprHandle,
+    api_key: *const c_char,
+) -> bool {
+    if api_key.is_null() {
+        return false;
+    }
+
+    let handle = unsafe { &mut *handle };
+
+    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return false,
+    };
+
+    handle.completion = Arc::new(AnthropicCompletionProvider::new(Some(key)));
+    debug!("Switched to Anthropic completion provider");
+
+    true
+}
+
+/// Set completion provider
+/// provider: 0 = OpenAI, 1 = Anthropic
+/// api_key: The API key for the provider
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_set_completion_provider(
+    handle: *mut FlowWhisprHandle,
+    provider: u8,
+    api_key: *const c_char,
+) -> bool {
+    if api_key.is_null() {
+        return false;
+    }
+
+    let handle = unsafe { &mut *handle };
+
+    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return false,
+    };
+
+    match provider {
+        0 => {
+            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
+            debug!("Set completion provider to OpenAI");
+        }
+        1 => {
+            handle.completion = Arc::new(AnthropicCompletionProvider::new(Some(key)));
+            debug!("Set completion provider to Anthropic");
+        }
+        _ => return false,
+    }
+
+    true
+}
+
+/// Get the current completion provider name
+/// Returns: 0 = OpenAI, 1 = Anthropic, 255 = Unknown
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_completion_provider(handle: *mut FlowWhisprHandle) -> u8 {
+    let handle = unsafe { &*handle };
+
+    match handle.completion.name() {
+        "OpenAI GPT" => 0,
+        "Anthropic Claude" => 1,
+        _ => 255,
+    }
+}
+
+/// Get all shortcuts as JSON (caller must free with flowwhispr_free_string)
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwhispr_get_shortcuts_json(handle: *mut FlowWhisprHandle) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    let shortcuts: Vec<serde_json::Value> = handle
+        .shortcuts
+        .get_all()
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "trigger": s.trigger,
+                "replacement": s.replacement,
+                "use_count": s.use_count,
+                "enabled": s.enabled,
+            })
+        })
+        .collect();
+
+    match CString::new(serde_json::to_string(&shortcuts).unwrap_or_default()) {
+        Ok(cstr) => cstr.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
 }
