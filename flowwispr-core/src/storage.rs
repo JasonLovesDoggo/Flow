@@ -918,7 +918,11 @@ impl Storage {
                     organization: row.get(2)?,
                     category: parse_contact_category(&row.get::<_, String>(3)?),
                     frequency: row.get::<_, i64>(4)? as u32,
-                    last_contacted: last_contacted.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))),
+                    last_contacted: last_contacted.and_then(|s| {
+                        DateTime::parse_from_rfc3339(&s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
                     created_at: DateTime::parse_from_rfc3339(&created_at)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -954,7 +958,11 @@ impl Storage {
                     organization: row.get(2)?,
                     category: parse_contact_category(&row.get::<_, String>(3)?),
                     frequency: row.get::<_, i64>(4)? as u32,
-                    last_contacted: last_contacted.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))),
+                    last_contacted: last_contacted.and_then(|s| {
+                        DateTime::parse_from_rfc3339(&s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
                     created_at: DateTime::parse_from_rfc3339(&created_at)
                         .unwrap()
                         .with_timezone(&Utc),

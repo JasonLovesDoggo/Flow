@@ -99,12 +99,48 @@ fn estimate_duration_ms(bytes: usize, sample_rate: u32) -> u64 {
 
 fn load_persisted_configuration(handle: &mut FlowWhisprHandle) {
     // Load all API keys
-    let openai_key = handle.storage.get_setting(SETTING_OPENAI_API_KEY).ok().flatten();
-    let gemini_key = handle.storage.get_setting(SETTING_GEMINI_API_KEY).ok().flatten();
-    let openrouter_key = handle.storage.get_setting(SETTING_OPENROUTER_API_KEY).ok().flatten();
+    let openai_key = handle
+        .storage
+        .get_setting(SETTING_OPENAI_API_KEY)
+        .ok()
+        .flatten();
+    let gemini_key = handle
+        .storage
+        .get_setting(SETTING_GEMINI_API_KEY)
+        .ok()
+        .flatten();
+    let openrouter_key = handle
+        .storage
+        .get_setting(SETTING_OPENROUTER_API_KEY)
+        .ok()
+        .flatten();
 
     // Load saved provider preference
-    let saved_provider = handle.storage.get_setting(SETTING_COMPLETION_PROVIDER).ok().flatten();
+    let saved_provider = handle
+        .storage
+        .get_setting(SETTING_COMPLETION_PROVIDER)
+        .ok()
+        .flatten();
+
+    // Log what we found for debugging
+    tracing::info!("Loading persisted config:");
+    tracing::info!(
+        "  OpenAI key: {}",
+        if openai_key.is_some() { "SET" } else { "NONE" }
+    );
+    tracing::info!(
+        "  Gemini key: {}",
+        if gemini_key.is_some() { "SET" } else { "NONE" }
+    );
+    tracing::info!(
+        "  OpenRouter key: {}",
+        if openrouter_key.is_some() {
+            "SET"
+        } else {
+            "NONE"
+        }
+    );
+    tracing::info!("  Saved provider: {:?}", saved_provider);
 
     // Initialize providers based on saved preference
     match saved_provider.as_deref() {
@@ -240,7 +276,10 @@ pub extern "C" fn flowwispr_start_recording(handle: *mut FlowWhisprHandle) -> bo
     if is_messages {
         match MessagesDetector::get_active_contact() {
             Ok(Some(contact_name)) => {
-                debug!("Captured Messages contact at recording start: {}", contact_name);
+                debug!(
+                    "Captured Messages contact at recording start: {}",
+                    contact_name
+                );
                 *handle.captured_contact.lock() = Some(contact_name);
             }
             Ok(None) => {
@@ -248,7 +287,10 @@ pub extern "C" fn flowwispr_start_recording(handle: *mut FlowWhisprHandle) -> bo
                 *handle.captured_contact.lock() = None;
             }
             Err(e) => {
-                debug!("Failed to capture Messages contact at recording start: {}", e);
+                debug!(
+                    "Failed to capture Messages contact at recording start: {}",
+                    e
+                );
                 *handle.captured_contact.lock() = None;
             }
         }
@@ -788,155 +830,6 @@ pub extern "C" fn flowwispr_is_configured(handle: *mut FlowWhisprHandle) -> bool
     handle.transcription.is_configured() && handle.completion.is_configured()
 }
 
-/// Set the OpenAI API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_OPENAI_API_KEY, &key) {
-        let message = format!("Failed to save OpenAI API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "openai")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // reinitialize providers with new key
-    handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key.clone())));
-    handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
-/// Set the Gemini API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_gemini_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_GEMINI_API_KEY, &key) {
-        let message = format!("Failed to save Gemini API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "gemini")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // reinitialize providers with new key
-    handle.transcription = Arc::new(GeminiTranscriptionProvider::new(Some(key.clone())));
-    handle.completion = Arc::new(GeminiCompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
-/// Set the OpenRouter API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_openrouter_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_OPENROUTER_API_KEY, &key) {
-        let message = format!("Failed to save OpenRouter API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "openrouter")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // OpenRouter only handles completion, keep transcription provider as-is
-    handle.completion = Arc::new(OpenRouterCompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
 // ============ App Tracking ============
 
 /// Set the currently active app (call from Swift when app switches)
@@ -1153,7 +1046,81 @@ pub extern "C" fn flowwispr_get_last_error(handle: *mut FlowWhisprHandle) -> *mu
 
 // ============ Provider Configuration ============
 
-/// Set completion provider
+/// Switch completion provider (loads API key from database)
+/// provider: 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// Returns true if provider was switched successfully
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_switch_completion_provider(
+    handle: *mut FlowWhisprHandle,
+    provider: u8,
+) -> bool {
+    let handle = unsafe { &mut *handle };
+
+    let (setting_key, provider_name) = match provider {
+        0 => (SETTING_OPENAI_API_KEY, "openai"),
+        1 => (SETTING_GEMINI_API_KEY, "gemini"),
+        2 => (SETTING_OPENROUTER_API_KEY, "openrouter"),
+        _ => {
+            set_last_error(handle, "Invalid provider");
+            return false;
+        }
+    };
+
+    // Load the API key from the database
+    let api_key = match handle.storage.get_setting(setting_key) {
+        Ok(Some(key)) if !key.is_empty() => key,
+        Ok(Some(_)) | Ok(None) => {
+            let message = format!("No API key configured for {}", provider_name);
+            error!("{message}");
+            set_last_error(handle, message);
+            return false;
+        }
+        Err(e) => {
+            let message = format!("Failed to load API key for {}: {}", provider_name, e);
+            error!("{message}");
+            set_last_error(handle, message);
+            return false;
+        }
+    };
+
+    // Save the provider preference
+    if let Err(e) = handle
+        .storage
+        .set_setting(SETTING_COMPLETION_PROVIDER, provider_name)
+    {
+        let message = format!("Failed to save completion provider: {e}");
+        error!("{message}");
+        set_last_error(handle, message);
+        return false;
+    }
+
+    // Initialize the provider
+    match provider {
+        0 => {
+            handle.transcription =
+                Arc::new(OpenAITranscriptionProvider::new(Some(api_key.clone())));
+            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to OpenAI");
+        }
+        1 => {
+            handle.transcription =
+                Arc::new(GeminiTranscriptionProvider::new(Some(api_key.clone())));
+            handle.completion = Arc::new(GeminiCompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to Gemini");
+        }
+        2 => {
+            // OpenRouter only handles completion, keep existing transcription provider
+            handle.completion = Arc::new(OpenRouterCompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to OpenRouter");
+        }
+        _ => unreachable!(),
+    }
+
+    clear_last_error(handle);
+    true
+}
+
+/// Set completion provider with API key (saves both)
 /// provider: 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
 /// api_key: The API key for the provider
 #[unsafe(no_mangle)]
@@ -1278,7 +1245,10 @@ fn mask_api_key(key: &str) -> String {
 /// Returns null if no key is set, or a masked version like "sk-••••••••"
 /// Caller must free the returned string with flowwispr_free_string
 #[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_get_api_key(handle: *mut FlowWhisprHandle, provider: u8) -> *mut c_char {
+pub extern "C" fn flowwispr_get_api_key(
+    handle: *mut FlowWhisprHandle,
+    provider: u8,
+) -> *mut c_char {
     let handle = unsafe { &*handle };
 
     let setting_key = match provider {

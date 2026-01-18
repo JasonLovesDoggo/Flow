@@ -137,24 +137,6 @@ void flowwispr_free_string(char* s);
 /// @return true if configured
 bool flowwispr_is_configured(FlowWhisprHandle* handle);
 
-/// Set the OpenAI API key
-/// @param handle Engine handle
-/// @param api_key OpenAI API key
-/// @return true on success
-bool flowwispr_set_api_key(FlowWhisprHandle* handle, const char* api_key);
-
-/// Set the Gemini API key
-/// @param handle Engine handle
-/// @param api_key Gemini API key
-/// @return true on success
-bool flowwispr_set_gemini_api_key(FlowWhisprHandle* handle, const char* api_key);
-
-/// Set the OpenRouter API key
-/// @param handle Engine handle
-/// @param api_key OpenRouter API key
-/// @return true on success
-bool flowwispr_set_openrouter_api_key(FlowWhisprHandle* handle, const char* api_key);
-
 // ============ App Tracking ============
 
 /// Set the currently active app
@@ -208,7 +190,13 @@ char* flowwispr_get_shortcuts_json(FlowWhisprHandle* handle);
 
 // ============ Provider Configuration ============
 
-/// Set completion provider
+/// Switch completion provider (loads API key from database)
+/// @param handle Engine handle
+/// @param provider 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// @return true on success
+bool flowwispr_switch_completion_provider(FlowWhisprHandle* handle, uint8_t provider);
+
+/// Set completion provider with API key (saves both)
 /// @param handle Engine handle
 /// @param provider 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
 /// @param api_key API key for the provider

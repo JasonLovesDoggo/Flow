@@ -40,24 +40,78 @@ impl ContactClassifier {
     pub fn new() -> Self {
         // Partner terms of endearment (case-insensitive)
         let partner_keywords = vec![
-            "bae", "hubby", "wife", "wifey", "husband", "my love", "baby", "babe",
-            "love", "honey", "sweetheart", "darling", "dear", "sweetie", "boo",
+            "bae",
+            "hubby",
+            "wife",
+            "wifey",
+            "husband",
+            "my love",
+            "baby",
+            "babe",
+            "love",
+            "honey",
+            "sweetheart",
+            "darling",
+            "dear",
+            "sweetie",
+            "boo",
         ];
 
         // Family titles (case-insensitive)
         let family_keywords = vec![
-            "mom", "dad", "mama", "papa", "mother", "father", "grandma", "grandpa",
-            "grandmother", "grandfather", "aunt", "uncle", "sister", "brother",
-            "sis", "bro", "cousin", "nephew", "niece", "ice mom", "ice dad",
-            "ice mama", "ice papa", "ice aunt", "ice uncle", "ice grandmother",
+            "mom",
+            "dad",
+            "mama",
+            "papa",
+            "mother",
+            "father",
+            "grandma",
+            "grandpa",
+            "grandmother",
+            "grandfather",
+            "aunt",
+            "uncle",
+            "sister",
+            "brother",
+            "sis",
+            "bro",
+            "cousin",
+            "nephew",
+            "niece",
+            "ice mom",
+            "ice dad",
+            "ice mama",
+            "ice papa",
+            "ice aunt",
+            "ice uncle",
+            "ice grandmother",
             "ice grandfather",
         ];
 
         // Professional titles (case-insensitive)
         let professional_keywords = vec![
-            "dr.", "dr ", "prof.", "prof ", "professor", "boss", "manager",
-            "coach", "director", "vp", "ceo", "cto", "cfo", "coo", "president",
-            "supervisor", "lead", "senior", "jr.", "sr.", "attorney", "lawyer",
+            "dr.",
+            "dr ",
+            "prof.",
+            "prof ",
+            "professor",
+            "boss",
+            "manager",
+            "coach",
+            "director",
+            "vp",
+            "ceo",
+            "cto",
+            "cfo",
+            "coo",
+            "president",
+            "supervisor",
+            "lead",
+            "senior",
+            "jr.",
+            "sr.",
+            "attorney",
+            "lawyer",
         ];
 
         // Professional credentials (case-insensitive)
@@ -67,15 +121,14 @@ impl ContactClassifier {
 
         // Casual emojis (non-romantic)
         let casual_emojis = vec![
-            '🔥', '🍻', '🤪', '🍕', '🎮', '⚽', '🏀', '🎸', '🎉', '💪',
-            '🤘', '🍺', '🎯', '🚀', '💯', '👊', '🤙', '😎', '🏆',
+            '🔥', '🍻', '🤪', '🍕', '🎮', '⚽', '🏀', '🎸', '🎉', '💪', '🤘', '🍺', '🎯', '🚀',
+            '💯', '👊', '🤙', '😎', '🏆',
         ];
 
         // Romantic emojis
         let partner_emojis = vec![
-            '❤', '💕', '💖', '💗', '💘', '💝', '💞', '💟', '💙', '💚',
-            '💛', '🧡', '💜', '🖤', '🤍', '🤎', '💋', '💍', '💑', '💏',
-            '👩', '👨', '❣',
+            '❤', '💕', '💖', '💗', '💘', '💝', '💞', '💟', '💙', '💚', '💛', '🧡', '💜', '🖤',
+            '🤍', '🤎', '💋', '💍', '💑', '💏', '👩', '👨', '❣',
         ];
 
         Self {
@@ -111,7 +164,8 @@ impl ContactClassifier {
         }
 
         if self.professional_patterns.is_match(&name_lower)
-            || self.has_professional_suffix(&name_lower) {
+            || self.has_professional_suffix(&name_lower)
+        {
             return ContactCategory::Professional;
         }
 
@@ -175,9 +229,7 @@ impl ContactClassifier {
         // Check for informal descriptors first
         let name_lower = name.to_lowercase();
         let informal_descriptors = ["from gym", "roommate", "lol", "haha", "buddy", "pal"];
-        let has_informal_descriptor = informal_descriptors
-            .iter()
-            .any(|d| name_lower.contains(d));
+        let has_informal_descriptor = informal_descriptors.iter().any(|d| name_lower.contains(d));
 
         if has_informal_descriptor {
             return true;
@@ -252,10 +304,22 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let cases = vec![
-            ContactInput { name: "Bae".to_string(), organization: String::new() },
-            ContactInput { name: "❤️ Alex".to_string(), organization: String::new() },
-            ContactInput { name: "My Love".to_string(), organization: String::new() },
-            ContactInput { name: "Hubby 💍".to_string(), organization: String::new() },
+            ContactInput {
+                name: "Bae".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "❤️ Alex".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "My Love".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Hubby 💍".to_string(),
+                organization: String::new(),
+            },
         ];
 
         for case in cases {
@@ -273,10 +337,22 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let cases = vec![
-            ContactInput { name: "Mom".to_string(), organization: String::new() },
-            ContactInput { name: "Dad".to_string(), organization: String::new() },
-            ContactInput { name: "ICE Mom".to_string(), organization: String::new() },
-            ContactInput { name: "Grandma".to_string(), organization: String::new() },
+            ContactInput {
+                name: "Mom".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Dad".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "ICE Mom".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Grandma".to_string(),
+                organization: String::new(),
+            },
         ];
 
         for case in cases {
@@ -302,10 +378,22 @@ mod tests {
 
         // Professional titles
         let cases = vec![
-            ContactInput { name: "Dr. Smith".to_string(), organization: String::new() },
-            ContactInput { name: "Prof. Johnson".to_string(), organization: String::new() },
-            ContactInput { name: "John Smith, MD".to_string(), organization: String::new() },
-            ContactInput { name: "Jane Doe PhD".to_string(), organization: String::new() },
+            ContactInput {
+                name: "Dr. Smith".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Prof. Johnson".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "John Smith, MD".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Jane Doe PhD".to_string(),
+                organization: String::new(),
+            },
         ];
 
         for case in cases {
@@ -323,9 +411,18 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let cases = vec![
-            ContactInput { name: "dave from gym".to_string(), organization: String::new() },
-            ContactInput { name: "Mike 🍺".to_string(), organization: String::new() },
-            ContactInput { name: "alex lol".to_string(), organization: String::new() },
+            ContactInput {
+                name: "dave from gym".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Mike 🍺".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "alex lol".to_string(),
+                organization: String::new(),
+            },
         ];
 
         for case in cases {
@@ -343,9 +440,18 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let cases = vec![
-            ContactInput { name: "John Smith".to_string(), organization: String::new() },
-            ContactInput { name: "Uber Driver".to_string(), organization: String::new() },
-            ContactInput { name: "Plumber".to_string(), organization: String::new() },
+            ContactInput {
+                name: "John Smith".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Uber Driver".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Plumber".to_string(),
+                organization: String::new(),
+            },
         ];
 
         for case in cases {
@@ -363,11 +469,26 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let inputs = vec![
-            ContactInput { name: "Mom".to_string(), organization: String::new() },
-            ContactInput { name: "❤️ Alex".to_string(), organization: String::new() },
-            ContactInput { name: "Sarah".to_string(), organization: "Acme Inc".to_string() },
-            ContactInput { name: "dave from gym".to_string(), organization: String::new() },
-            ContactInput { name: "John Smith".to_string(), organization: String::new() },
+            ContactInput {
+                name: "Mom".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "❤️ Alex".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Sarah".to_string(),
+                organization: "Acme Inc".to_string(),
+            },
+            ContactInput {
+                name: "dave from gym".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "John Smith".to_string(),
+                organization: String::new(),
+            },
         ];
 
         let result = classifier.classify_batch(&inputs);
@@ -375,8 +496,14 @@ mod tests {
         assert_eq!(result.get("Mom"), Some(&ContactCategory::CloseFamily));
         assert_eq!(result.get("❤️ Alex"), Some(&ContactCategory::Partner));
         assert_eq!(result.get("Sarah"), Some(&ContactCategory::Professional));
-        assert_eq!(result.get("dave from gym"), Some(&ContactCategory::CasualPeer));
-        assert_eq!(result.get("John Smith"), Some(&ContactCategory::FormalNeutral));
+        assert_eq!(
+            result.get("dave from gym"),
+            Some(&ContactCategory::CasualPeer)
+        );
+        assert_eq!(
+            result.get("John Smith"),
+            Some(&ContactCategory::FormalNeutral)
+        );
     }
 
     #[test]
@@ -384,14 +511,23 @@ mod tests {
         let classifier = ContactClassifier::new();
 
         let inputs = vec![
-            ContactInput { name: "Mom".to_string(), organization: String::new() },
-            ContactInput { name: "Sarah Work".to_string(), organization: "Acme Inc".to_string() },
+            ContactInput {
+                name: "Mom".to_string(),
+                organization: String::new(),
+            },
+            ContactInput {
+                name: "Sarah Work".to_string(),
+                organization: "Acme Inc".to_string(),
+            },
         ];
 
         let json = classifier.classify_batch_json(&inputs);
         let parsed: HashMap<String, ContactCategory> = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.get("Mom"), Some(&ContactCategory::CloseFamily));
-        assert_eq!(parsed.get("Sarah Work"), Some(&ContactCategory::Professional));
+        assert_eq!(
+            parsed.get("Sarah Work"),
+            Some(&ContactCategory::Professional)
+        );
     }
 }

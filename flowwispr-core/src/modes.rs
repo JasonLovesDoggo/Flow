@@ -206,8 +206,8 @@ impl StyleObservation {
 
     /// Suggest a writing mode based on observations
     pub fn suggest_mode(&self) -> Option<WritingModeSuggestion> {
-        // need enough samples to make a suggestion
-        if self.sample_count < 5 {
+        // need enough samples to make a suggestion (lowered to 2 for faster learning)
+        if self.sample_count < 2 {
             return None;
         }
 

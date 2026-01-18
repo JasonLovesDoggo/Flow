@@ -35,9 +35,7 @@ impl MessagesDetector {
             return Ok(None);
         }
 
-        let window_title = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let window_title = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if window_title.is_empty() {
             return Ok(None);
@@ -115,9 +113,7 @@ impl MessagesDetector {
             return Ok(Vec::new());
         }
 
-        let result = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if result.is_empty() {
             return Ok(Vec::new());
@@ -144,10 +140,7 @@ mod tests {
             MessagesDetector::normalize_window_title("  John Smith  "),
             "John Smith"
         );
-        assert_eq!(
-            MessagesDetector::normalize_window_title("Mom"),
-            "Mom"
-        );
+        assert_eq!(MessagesDetector::normalize_window_title("Mom"), "Mom");
     }
 
     #[test]

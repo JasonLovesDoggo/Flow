@@ -15,11 +15,11 @@ use crate::types::{Correction, CorrectionSource};
 /// Minimum similarity threshold for considering a word pair as a typo correction
 const MIN_SIMILARITY: f64 = 0.7;
 
-/// Minimum confidence to auto-apply a correction
-const MIN_AUTO_APPLY_CONFIDENCE: f32 = 0.8;
+/// Minimum confidence to auto-apply a correction (lowered to 0.55 to trigger at ~3 occurrences instead of ~5)
+const MIN_AUTO_APPLY_CONFIDENCE: f32 = 0.55;
 
-/// Maximum word length difference to consider a correction
-const MAX_LENGTH_DIFF: usize = 3;
+/// Maximum word length difference to consider a correction (set to 1 for exact wrong words like "there"/"their")
+const MAX_LENGTH_DIFF: usize = 1;
 
 /// Engine for learning and applying typo corrections
 pub struct LearningEngine {

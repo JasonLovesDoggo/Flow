@@ -124,14 +124,20 @@ public final class FlowWispr: @unchecked Sendable {
     /// Initialize the FlowWispr engine
     /// - Parameter dbPath: Optional path to the SQLite database. If nil, uses default location.
     public init(dbPath: String? = nil) {
-        if let path = dbPath {
-            handle = path.withCString { cPath in
-                flowwispr_init(cPath)
-            }
-        } else {
-            handle = flowwispr_init(nil)
-        }
+        let path = dbPath ?? {
+            let fm = FileManager.default
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let flowDir = appSupport.appendingPathComponent("flowwispr")
 
+            // Create directory if needed
+            try? fm.createDirectory(at: flowDir, withIntermediateDirectories: true)
+
+            return flowDir.appendingPathComponent("flowwispr.db").path
+        }()
+
+        handle = path.withCString { cPath in
+            flowwispr_init(cPath)
+        }
     }
 
     deinit {
@@ -143,6 +149,14 @@ public final class FlowWispr: @unchecked Sendable {
     /// Check if the engine is properly initialized
     public var isInitialized: Bool {
         handle != nil
+    }
+
+    // MARK: - Configuration
+
+    /// Check if the transcription provider is configured
+    public var isConfigured: Bool {
+        guard let handle = handle else { return false }
+        return flowwispr_is_configured(handle)
     }
 
     // MARK: - Audio
@@ -304,53 +318,6 @@ public final class FlowWispr: @unchecked Sendable {
         return flowwispr_transcription_count(handle)
     }
 
-    // MARK: - Configuration
-
-    /// Check if the transcription provider is configured
-    public var isConfigured: Bool {
-        guard let handle = handle else { return false }
-        return flowwispr_is_configured(handle)
-    }
-
-    /// Set the OpenAI API key
-    /// - Parameter apiKey: The OpenAI API key
-    /// - Returns: true on success
-    public func setApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_api_key(handle, cKey)
-        }
-
-        return isSet
-    }
-
-    /// Set the Gemini API key
-    /// - Parameter apiKey: The Gemini API key
-    /// - Returns: true on success
-    public func setGeminiApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_gemini_api_key(handle, cKey)
-        }
-
-        return isSet
-    }
-
-    /// Set the OpenRouter API key
-    /// - Parameter apiKey: The OpenRouter API key
-    /// - Returns: true on success
-    public func setOpenRouterApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_openrouter_api_key(handle, cKey)
-        }
-
-        return isSet
-    }
-
     // MARK: - App Tracking
 
     /// Set the currently active app
@@ -500,7 +467,15 @@ public final class FlowWispr: @unchecked Sendable {
 
     // MARK: - Provider Configuration
 
-    /// Set the completion provider
+    /// Switch the completion provider (loads API key from database)
+    /// - Parameter provider: The provider to use
+    /// - Returns: true on success
+    public func switchCompletionProvider(_ provider: CompletionProvider) -> Bool {
+        guard let handle = handle else { return false }
+        return flowwispr_switch_completion_provider(handle, provider.rawValue)
+    }
+
+    /// Set the completion provider with API key (saves both)
     /// - Parameters:
     ///   - provider: The provider to use
     ///   - apiKey: The API key for the provider

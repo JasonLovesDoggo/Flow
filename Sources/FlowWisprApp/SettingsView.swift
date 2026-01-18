@@ -19,6 +19,8 @@ struct SettingsContentView: View {
                 Divider()
                 AccessibilitySection()
                 Divider()
+                LearningStatsSection()
+                Divider()
                 AboutSection()
             }
             .padding(FW.spacing24)
@@ -62,15 +64,16 @@ struct APISettingsSection: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .onChange(of: selectedProvider) { _, newProvider in
-                    // Switch provider when selection changes
-                    let apiKey: String
-                    switch newProvider {
-                    case .openAI: apiKey = openAIKey
-                    case .gemini: apiKey = geminiKey
-                    case .openRouter: apiKey = openRouterKey
-                    }
-                    if !apiKey.isEmpty {
-                        appState.setProvider(newProvider, apiKey: apiKey)
+                    // Switch provider using saved API key from database
+                    if !appState.engine.switchCompletionProvider(newProvider) {
+                        // Switch failed, revert selection
+                        if let current = appState.engine.completionProvider {
+                            selectedProvider = current
+                        }
+                        appState.errorMessage = appState.engine.lastError ?? "Failed to switch provider. Make sure you've saved an API key for \(newProvider.displayName)."
+                    } else {
+                        appState.isConfigured = appState.engine.isConfigured
+                        appState.errorMessage = nil
                     }
                 }
                 .onAppear {
@@ -114,10 +117,7 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setApiKey(openAIKey)
-                        if selectedProvider == .openAI {
-                            appState.setProvider(.openAI, apiKey: openAIKey)
-                        }
+                        appState.setApiKey(openAIKey, for: .openAI)
                         // Refresh the masked key display
                         existingOpenAIKey = appState.engine.maskedOpenAIKey
                         openAIKey = ""
@@ -162,10 +162,7 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setGeminiApiKey(geminiKey)
-                        if selectedProvider == .gemini {
-                            appState.setProvider(.gemini, apiKey: geminiKey)
-                        }
+                        appState.setApiKey(geminiKey, for: .gemini)
                         // Refresh the masked key display
                         existingGeminiKey = appState.engine.maskedGeminiKey
                         geminiKey = ""
@@ -210,10 +207,7 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setOpenRouterApiKey(openRouterKey)
-                        if selectedProvider == .openRouter {
-                            appState.setProvider(.openRouter, apiKey: openRouterKey)
-                        }
+                        appState.setApiKey(openRouterKey, for: .openRouter)
                         // Refresh the masked key display
                         existingOpenRouterKey = appState.engine.maskedOpenRouterKey
                         openRouterKey = ""
@@ -439,6 +433,114 @@ struct AccessibilitySection: View {
         .onDisappear {
             if appState.isCapturingHotkey {
                 appState.endHotkeyCapture()
+            }
+        }
+    }
+}
+
+// MARK: - Learning Stats
+
+struct LearningStatsSection: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FW.spacing16) {
+            Label("Learning System", systemImage: "brain")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: FW.spacing12) {
+                // Correction count
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Learned Corrections")
+                            .font(.subheadline.weight(.medium))
+                        Text("Auto-applies high-confidence fixes")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(appState.engine.correctionCount)")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FW.accent)
+                }
+                .padding(FW.spacing12)
+                .background(FW.accent.opacity(0.1))
+                .cornerRadius(8)
+
+                // Shortcut count
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Voice Shortcuts")
+                            .font(.subheadline.weight(.medium))
+                        Text("Custom expansions you've created")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(appState.engine.shortcutCount)")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FW.accent)
+                }
+                .padding(FW.spacing12)
+                .background(FW.accent.opacity(0.1))
+                .cornerRadius(8)
+
+                // Style suggestion
+                if let suggestion = appState.engine.styleSuggestion {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Suggested Style for \(appState.currentApp)")
+                                .font(.subheadline.weight(.medium))
+                            Text("Based on your writing patterns")
+                                .font(.caption)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+                        Spacer()
+                        Text(suggestion.displayName)
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(FW.success)
+                    }
+                    .padding(FW.spacing12)
+                    .background(FW.success.opacity(0.1))
+                    .cornerRadius(8)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Style Learning")
+                            .font(.subheadline.weight(.medium))
+                        Text("Need 3+ samples in \(appState.currentApp) to suggest a style")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    .padding(FW.spacing12)
+                    .background(FW.textTertiary.opacity(0.05))
+                    .cornerRadius(8)
+                }
+
+                // Total stats
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("All-Time Stats")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(FW.textSecondary)
+
+                    HStack(spacing: FW.spacing24) {
+                        VStack(spacing: 4) {
+                            Text("\(appState.totalTranscriptions)")
+                                .font(.title3.weight(.semibold))
+                            Text("Transcriptions")
+                                .font(.caption2)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+
+                        VStack(spacing: 4) {
+                            Text("\(appState.totalMinutes)")
+                                .font(.title3.weight(.semibold))
+                            Text("Minutes")
+                                .font(.caption2)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+                    }
+                }
+                .padding(.top, FW.spacing8)
             }
         }
     }

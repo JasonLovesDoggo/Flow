@@ -571,50 +571,29 @@ final class AppState: ObservableObject {
 
     // MARK: - Settings
 
-    func setApiKey(_ key: String) {
+    func setApiKey(_ key: String, for provider: CompletionProvider) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setApiKey(trimmed) {
-            // Also switch to OpenAI provider
-            _ = engine.setCompletionProvider(.openAI, apiKey: trimmed)
+        if engine.setCompletionProvider(provider, apiKey: trimmed) {
             isConfigured = engine.isConfigured
             errorMessage = nil
-            Analytics.shared.track("API Key Set")
+            Analytics.shared.track("\(provider.displayName) API Key Set")
         } else {
             isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set API key"
+            errorMessage = engine.lastError ?? "Failed to set \(provider.displayName) API key"
         }
     }
 
-    func setGeminiApiKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setGeminiApiKey(trimmed) {
-            // Also switch to Gemini provider
-            _ = engine.setCompletionProvider(.gemini, apiKey: trimmed)
-            isConfigured = engine.isConfigured
-            errorMessage = nil
-            Analytics.shared.track("Gemini API Key Set")
+    func setProvider(_ provider: CompletionProvider, apiKey: String? = nil) {
+        let success: Bool
+        if let key = apiKey, !key.isEmpty {
+            // Save API key and switch provider
+            success = engine.setCompletionProvider(provider, apiKey: key)
         } else {
-            isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set Gemini API key"
+            // Just switch provider using saved key
+            success = engine.switchCompletionProvider(provider)
         }
-    }
 
-    func setOpenRouterApiKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setOpenRouterApiKey(trimmed) {
-            // Also switch to OpenRouter provider
-            _ = engine.setCompletionProvider(.openRouter, apiKey: trimmed)
-            isConfigured = engine.isConfigured
-            errorMessage = nil
-            Analytics.shared.track("OpenRouter API Key Set")
-        } else {
-            isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set OpenRouter API key"
-        }
-    }
-
-    func setProvider(_ provider: CompletionProvider, apiKey: String) {
-        if engine.setCompletionProvider(provider, apiKey: apiKey) {
+        if success {
             isConfigured = engine.isConfigured
             errorMessage = nil
             Analytics.shared.track("Provider Changed", eventProperties: ["provider": provider.displayName])
