@@ -25,14 +25,16 @@ use crate::learning::LearningEngine;
 use crate::macos_messages::MessagesDetector;
 use crate::modes::{StyleLearner, WritingMode, WritingModeEngine};
 use crate::providers::{
-    CompletionProvider, CompletionRequest, GeminiCompletionProvider, GeminiTranscriptionProvider,
-    LocalWhisperTranscriptionProvider, OpenAICompletionProvider, OpenAITranscriptionProvider,
-    OpenRouterCompletionProvider, TranscriptionProvider, TranscriptionRequest, WhisperModel,
+    Base10TranscriptionProvider, CompletionProvider, CompletionRequest, GeminiCompletionProvider,
+    GeminiTranscriptionProvider, LocalWhisperTranscriptionProvider, OpenAICompletionProvider,
+    OpenAITranscriptionProvider, OpenRouterCompletionProvider, TranscriptionProvider,
+    TranscriptionRequest, WhisperModel,
 };
 use crate::shortcuts::ShortcutsEngine;
 use crate::storage::{
-    SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY, SETTING_LOCAL_WHISPER_MODEL,
-    SETTING_OPENAI_API_KEY, SETTING_OPENROUTER_API_KEY, SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
+    SETTING_BASE10_API_KEY, SETTING_CLOUD_TRANSCRIPTION_PROVIDER, SETTING_COMPLETION_PROVIDER,
+    SETTING_GEMINI_API_KEY, SETTING_LOCAL_WHISPER_MODEL, SETTING_OPENAI_API_KEY,
+    SETTING_OPENROUTER_API_KEY, SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
 };
 use crate::types::{Shortcut, Transcription, TranscriptionHistoryEntry, TranscriptionStatus};
 
@@ -1466,30 +1468,33 @@ pub extern "C" fn flow_set_transcription_mode(
         handle.transcription = provider;
         debug!("Enabled local Whisper transcription with {:?} model", model);
     } else {
-        // Remote transcription - use the current completion provider's transcription
-        let provider_name = match handle.storage.get_setting(SETTING_COMPLETION_PROVIDER) {
+        // Remote transcription - use the cloud transcription provider setting
+        let cloud_provider = match handle
+            .storage
+            .get_setting(SETTING_CLOUD_TRANSCRIPTION_PROVIDER)
+        {
             Ok(Some(name)) => name,
             _ => "openai".to_string(), // default to OpenAI
         };
 
-        match provider_name.as_str() {
-            "openai" => {
-                if let Ok(Some(key)) = handle.storage.get_setting(SETTING_OPENAI_API_KEY) {
-                    handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key)));
-                    debug!("Enabled OpenAI remote transcription");
-                }
-            }
-            "gemini" => {
-                if let Ok(Some(key)) = handle.storage.get_setting(SETTING_GEMINI_API_KEY) {
-                    handle.transcription = Arc::new(GeminiTranscriptionProvider::new(Some(key)));
-                    debug!("Enabled Gemini remote transcription");
+        match cloud_provider.as_str() {
+            "base10" => {
+                if let Ok(Some(key)) = handle.storage.get_setting(SETTING_BASE10_API_KEY) {
+                    handle.transcription = Arc::new(Base10TranscriptionProvider::new(Some(key)));
+                    debug!("Enabled Base10 remote transcription");
+                } else {
+                    set_last_error(handle, "Base10 API key not configured");
+                    return false;
                 }
             }
             _ => {
-                // Default to OpenAI
+                // Default to OpenAI (includes "openai" and any unknown value)
                 if let Ok(Some(key)) = handle.storage.get_setting(SETTING_OPENAI_API_KEY) {
                     handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key)));
-                    debug!("Enabled OpenAI remote transcription (default)");
+                    debug!("Enabled OpenAI remote transcription");
+                } else {
+                    set_last_error(handle, "OpenAI API key not configured");
+                    return false;
                 }
             }
         }
@@ -1832,5 +1837,134 @@ pub extern "C" fn flow_get_writing_mode_for_category(
         WritingMode::Casual => 1,
         WritingMode::VeryCasual => 2,
         WritingMode::Excited => 3,
+    }
+}
+
+// ============ Cloud Transcription Provider ============
+
+/// Set cloud transcription provider with API key (saves both)
+/// provider: 0 = OpenAI, 1 = Base10
+/// api_key: The API key for the provider
+/// Returns true on success
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_set_cloud_transcription_provider(
+    handle: *mut FlowHandle,
+    provider: u8,
+    api_key: *const c_char,
+) -> bool {
+    if api_key.is_null() {
+        return false;
+    }
+
+    let handle = unsafe { &mut *handle };
+
+    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return false,
+    };
+
+    let (setting_key, provider_name) = match provider {
+        0 => (SETTING_OPENAI_API_KEY, "openai"),
+        1 => (SETTING_BASE10_API_KEY, "base10"),
+        _ => {
+            set_last_error(
+                handle,
+                "Invalid cloud transcription provider (0=OpenAI, 1=Base10)",
+            );
+            return false;
+        }
+    };
+
+    // Save the API key
+    if let Err(e) = handle.storage.set_setting(setting_key, &key) {
+        let message = format!("Failed to save {} API key: {}", provider_name, e);
+        error!("{message}");
+        set_last_error(handle, message);
+        return false;
+    }
+
+    // Save the provider preference
+    if let Err(e) = handle
+        .storage
+        .set_setting(SETTING_CLOUD_TRANSCRIPTION_PROVIDER, provider_name)
+    {
+        let message = format!("Failed to save cloud transcription provider: {e}");
+        error!("{message}");
+        set_last_error(handle, message);
+        return false;
+    }
+
+    // If currently using remote transcription, update the provider
+    let use_local = handle
+        .storage
+        .get_setting(SETTING_USE_LOCAL_TRANSCRIPTION)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    if !use_local {
+        match provider {
+            0 => {
+                handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key)));
+                debug!("Switched cloud transcription to OpenAI");
+            }
+            1 => {
+                handle.transcription = Arc::new(Base10TranscriptionProvider::new(Some(key)));
+                debug!("Switched cloud transcription to Base10");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    clear_last_error(handle);
+    true
+}
+
+/// Get the current cloud transcription provider
+/// Returns: 0 = OpenAI, 1 = Base10, 255 = Unknown/not set
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_get_cloud_transcription_provider(handle: *mut FlowHandle) -> u8 {
+    let handle = unsafe { &*handle };
+
+    match handle
+        .storage
+        .get_setting(SETTING_CLOUD_TRANSCRIPTION_PROVIDER)
+    {
+        Ok(Some(name)) => match name.as_str() {
+            "openai" => 0,
+            "base10" => 1,
+            _ => 0, // default to OpenAI
+        },
+        _ => 0, // default to OpenAI
+    }
+}
+
+/// Get API key for a cloud transcription provider in masked form
+/// provider: 0 = OpenAI, 1 = Base10
+/// Returns null if no key is set, or a masked version like "sk-••••••••"
+/// Caller must free the returned string with flow_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_get_cloud_transcription_api_key(
+    handle: *mut FlowHandle,
+    provider: u8,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    let setting_key = match provider {
+        0 => SETTING_OPENAI_API_KEY,
+        1 => SETTING_BASE10_API_KEY,
+        _ => return ptr::null_mut(),
+    };
+
+    match handle.storage.get_setting(setting_key) {
+        Ok(Some(key)) => {
+            let masked = mask_api_key(&key);
+            match CString::new(masked) {
+                Ok(cstr) => cstr.into_raw(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+        _ => ptr::null_mut(),
     }
 }

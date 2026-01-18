@@ -40,6 +40,10 @@ private struct TranscriptionSection: View {
     @EnvironmentObject var appState: AppState
     @State private var useLocalTranscription = false
     @State private var selectedWhisperModel: WhisperModel = .balanced
+    @State private var selectedCloudProvider: CloudTranscriptionProvider = .openAI
+    @State private var base10ApiKey = ""
+    @State private var existingBase10Key: String?
+    @State private var showSavedFeedback = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: FW.spacing12) {
@@ -67,6 +71,42 @@ private struct TranscriptionSection: View {
                                 _ = appState.engine.setTranscriptionMode(.local(model: newModel))
                             }
                     }
+                } else {
+                    // Cloud transcription provider selection
+                    VStack(alignment: .leading, spacing: FW.spacing12) {
+                        Text("Cloud Provider")
+                            .font(.subheadline)
+                            .foregroundStyle(FW.textSecondary)
+
+                        CloudTranscriptionProviderPicker(selection: $selectedCloudProvider)
+                            .onChange(of: selectedCloudProvider) { _, newProvider in
+                                // If switching to a provider that already has a key, apply it
+                                if let existingKey = appState.engine.getMaskedCloudTranscriptionApiKey(for: newProvider), !existingKey.isEmpty {
+                                    // Provider is already configured, just switch
+                                    _ = appState.engine.setTranscriptionMode(.remote)
+                                }
+                            }
+
+                        // Show Base10 API key input when Base10 is selected
+                        if selectedCloudProvider == .base10 {
+                            Base10ApiKeyInput(
+                                key: $base10ApiKey,
+                                hasExistingKey: existingBase10Key != nil,
+                                showSavedFeedback: $showSavedFeedback,
+                                onSave: saveBase10Key
+                            )
+                        }
+
+                        // Status indicator
+                        HStack(spacing: FW.spacing8) {
+                            Circle()
+                                .fill(isCloudProviderConfigured ? FW.success : FW.warning)
+                                .frame(width: 8, height: 8)
+                            Text(cloudProviderStatusText)
+                                .font(.caption)
+                                .foregroundStyle(isCloudProviderConfigured ? FW.success : FW.warning)
+                        }
+                    }
                 }
 
             }
@@ -74,6 +114,23 @@ private struct TranscriptionSection: View {
         }
         .onAppear {
             loadCurrentMode()
+        }
+    }
+
+    private var isCloudProviderConfigured: Bool {
+        switch selectedCloudProvider {
+        case .openAI:
+            return appState.engine.maskedOpenAIKey != nil
+        case .base10:
+            return existingBase10Key != nil
+        }
+    }
+
+    private var cloudProviderStatusText: String {
+        if isCloudProviderConfigured {
+            return "\(selectedCloudProvider.displayName) configured"
+        } else {
+            return selectedCloudProvider == .base10 ? "Base10 API key required" : "OpenAI API key required (see API Keys section)"
         }
     }
 
@@ -86,6 +143,108 @@ private struct TranscriptionSection: View {
             case .remote:
                 useLocalTranscription = false
             }
+        }
+        // Load cloud provider setting
+        if let provider = appState.engine.cloudTranscriptionProvider {
+            selectedCloudProvider = provider
+        }
+        // Load existing Base10 key
+        existingBase10Key = appState.engine.getMaskedCloudTranscriptionApiKey(for: .base10)
+    }
+
+    private func saveBase10Key(_ key: String) {
+        _ = appState.engine.setCloudTranscriptionProvider(.base10, apiKey: key)
+        existingBase10Key = appState.engine.getMaskedCloudTranscriptionApiKey(for: .base10)
+        base10ApiKey = ""
+
+        withAnimation {
+            showSavedFeedback = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                showSavedFeedback = false
+            }
+        }
+    }
+}
+
+private struct CloudTranscriptionProviderPicker: View {
+    @Binding var selection: CloudTranscriptionProvider
+
+    private let providers: [(CloudTranscriptionProvider, String, String)] = [
+        (.openAI, "OpenAI", "Uses your OpenAI API key"),
+        (.base10, "Base10", "Dedicated Whisper endpoint")
+    ]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(providers, id: \.0) { provider, label, tooltip in
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selection = provider
+                    }
+                } label: {
+                    Text(label)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(selection == provider ? FW.textPrimary : FW.textSecondary)
+                        .padding(.horizontal, FW.spacing16)
+                        .padding(.vertical, FW.spacing8)
+                        .frame(maxWidth: .infinity)
+                        .background {
+                            if selection == provider {
+                                RoundedRectangle(cornerRadius: FW.radiusSmall - 2)
+                                    .fill(FW.surface)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(tooltip)
+            }
+        }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: FW.radiusSmall)
+                .fill(FW.background)
+        }
+    }
+}
+
+private struct Base10ApiKeyInput: View {
+    @Binding var key: String
+    let hasExistingKey: Bool
+    @Binding var showSavedFeedback: Bool
+    let onSave: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: FW.spacing12) {
+            if hasExistingKey {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(FW.success)
+            }
+
+            FWSecureField(
+                text: $key,
+                placeholder: hasExistingKey ? "Enter new key to replace..." : "Base10 API key...",
+                onSubmit: { if !key.isEmpty { onSave(key) } }
+            )
+
+            Button {
+                onSave(key)
+            } label: {
+                if showSavedFeedback {
+                    HStack(spacing: FW.spacing4) {
+                        Image(systemName: "checkmark")
+                        Text("Saved")
+                    }
+                } else {
+                    Text("Save")
+                }
+            }
+            .buttonStyle(FWSecondaryButtonStyle())
+            .disabled(key.isEmpty)
         }
     }
 }

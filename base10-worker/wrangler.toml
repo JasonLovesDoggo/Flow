@@ -1,0 +1,6 @@
+name = "base10-proxy"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-06-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"

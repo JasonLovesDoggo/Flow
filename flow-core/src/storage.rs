@@ -23,9 +23,12 @@ pub const SETTING_OPENAI_API_KEY: &str = "openai_api_key";
 pub const SETTING_GEMINI_API_KEY: &str = "gemini_api_key";
 pub const SETTING_ANTHROPIC_API_KEY: &str = "anthropic_api_key";
 pub const SETTING_OPENROUTER_API_KEY: &str = "openrouter_api_key";
+pub const SETTING_BASE10_API_KEY: &str = "base10_api_key";
 pub const SETTING_COMPLETION_PROVIDER: &str = "completion_provider";
 pub const SETTING_USE_LOCAL_TRANSCRIPTION: &str = "use_local_transcription";
 pub const SETTING_LOCAL_WHISPER_MODEL: &str = "local_whisper_model";
+/// Cloud transcription provider: "openai" | "base10"
+pub const SETTING_CLOUD_TRANSCRIPTION_PROVIDER: &str = "cloud_transcription_provider";
 
 impl Storage {
     /// Open or create a database at the given path

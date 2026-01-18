@@ -74,6 +74,26 @@ public enum CompletionProvider: UInt8, Sendable {
     }
 }
 
+/// Cloud transcription provider options (for remote transcription)
+public enum CloudTranscriptionProvider: UInt8, Sendable, CaseIterable {
+    case openAI = 0
+    case base10 = 1
+
+    public var displayName: String {
+        switch self {
+        case .openAI: return "OpenAI"
+        case .base10: return "Base10"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .openAI: return "OpenAI Whisper API"
+        case .base10: return "Base10 Whisper (Faster)"
+        }
+    }
+}
+
 /// Whisper model sizes for local transcription
 public enum WhisperModel: UInt8, Sendable {
     case turbo = 0     // Quantized tiny (~15MB) - blazing fast
@@ -587,6 +607,39 @@ public final class Flow: @unchecked Sendable {
     public func isModelLoading() -> Bool {
         guard let handle = handle else { return false }
         return flow_is_model_loading(handle)
+    }
+
+    // MARK: - Cloud Transcription Provider
+
+    /// Set the cloud transcription provider with API key
+    /// - Parameters:
+    ///   - provider: The cloud transcription provider to use
+    ///   - apiKey: The API key for the provider
+    /// - Returns: true on success
+    public func setCloudTranscriptionProvider(_ provider: CloudTranscriptionProvider, apiKey: String) -> Bool {
+        guard let handle = handle else { return false }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedKey.withCString { cKey in
+            flow_set_cloud_transcription_provider(handle, provider.rawValue, cKey)
+        }
+    }
+
+    /// Get the current cloud transcription provider
+    public var cloudTranscriptionProvider: CloudTranscriptionProvider? {
+        guard let handle = handle else { return nil }
+        let rawValue = flow_get_cloud_transcription_provider(handle)
+        return CloudTranscriptionProvider(rawValue: rawValue)
+    }
+
+    /// Get API key for a cloud transcription provider in masked form
+    /// - Parameter provider: The provider to get the key for
+    /// - Returns: Masked API key (e.g., "sk-••••••••") or nil if not set
+    public func getMaskedCloudTranscriptionApiKey(for provider: CloudTranscriptionProvider) -> String? {
+        guard let handle = handle else { return nil }
+        guard let cString = flow_get_cloud_transcription_api_key(handle, provider.rawValue) else { return nil }
+        let string = String(cString: cString)
+        flow_free_string(cString)
+        return string
     }
 
     // Configuration persistence is handled in the core database.
