@@ -213,11 +213,10 @@ async fn call_base10(
         .map_err(|_| worker::Error::RustError("Missing BASETEN_API_KEY".to_string()))?
         .to_string();
 
-    // Build prompt: always include "Hey Flow, Flow" plus any user-provided hints
-    // Including "Flow" explicitly helps Whisper spell it correctly (not "Flo")
+    // Build prompt: include "Hey Flow" to help recognize wake phrase
     let prompt = match user_prompt {
-        Some(extra) if !extra.is_empty() => format!("Hey Flow, Flow, {}", extra),
-        _ => "Hey Flow, Flow".to_string(),
+        Some(extra) if !extra.is_empty() => format!("Hey Flow. {}", extra),
+        _ => "Hey Flow.".to_string(),
     };
 
     let request = Base10Request {
