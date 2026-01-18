@@ -333,6 +333,7 @@ mod tests {
                     confidence: 0.95,
                 },
             );
+
             cache.insert(
                 "recieve".to_string(),
                 CachedCorrection {

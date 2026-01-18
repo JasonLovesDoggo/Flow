@@ -1,8 +1,8 @@
 //! Gemini provider implementations for Whisper transcription and completion
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
@@ -66,7 +66,9 @@ struct GeminiContent {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum GeminiPart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     InlineData {
         #[serde(rename = "inlineData")]
         inline_data: GeminiInlineData,
@@ -104,7 +106,9 @@ struct GeminiContentResponse {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum GeminiPartResponse {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     InlineData {
         #[serde(rename = "inlineData")]
         inline_data: GeminiInlineDataResponse,
@@ -143,7 +147,8 @@ impl TranscriptionProvider for GeminiTranscriptionProvider {
         let prompt_text = if let Some(prompt) = &request.prompt {
             prompt.clone()
         } else {
-            "Transcribe this audio accurately. Output only the transcribed text, nothing else.".to_string()
+            "Transcribe this audio accurately. Output only the transcribed text, nothing else."
+                .to_string()
         };
         parts.insert(0, GeminiPart::Text { text: prompt_text });
 
@@ -156,7 +161,10 @@ impl TranscriptionProvider for GeminiTranscriptionProvider {
 
         debug!("Sending transcription request to Gemini");
 
-        let url = format!("{}/models/{}:generateContent?key={}", GEMINI_API_BASE, self.model, api_key);
+        let url = format!(
+            "{}/models/{}:generateContent?key={}",
+            GEMINI_API_BASE, self.model, api_key
+        );
         let response = self
             .client
             .post(&url)
@@ -182,13 +190,10 @@ impl TranscriptionProvider for GeminiTranscriptionProvider {
             .into_iter()
             .next()
             .and_then(|c| {
-                c.content
-                    .parts
-                    .into_iter()
-                    .find_map(|p| match p {
-                        GeminiPartResponse::Text { text } => Some(text),
-                        _ => None,
-                    })
+                c.content.parts.into_iter().find_map(|p| match p {
+                    GeminiPartResponse::Text { text } => Some(text),
+                    _ => None,
+                })
             })
             .ok_or_else(|| Error::Transcription("No transcription returned".to_string()))?;
 

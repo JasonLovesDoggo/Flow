@@ -23,10 +23,13 @@ use crate::learning::LearningEngine;
 use crate::modes::{StyleLearner, WritingMode, WritingModeEngine};
 use crate::providers::{
     CompletionProvider, CompletionRequest, GeminiCompletionProvider, GeminiTranscriptionProvider,
-    OpenAICompletionProvider, OpenAITranscriptionProvider, TranscriptionProvider, TranscriptionRequest,
+    OpenAICompletionProvider, OpenAITranscriptionProvider, TranscriptionProvider,
+    TranscriptionRequest,
 };
 use crate::shortcuts::ShortcutsEngine;
-use crate::storage::{SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY, SETTING_OPENAI_API_KEY, Storage};
+use crate::storage::{
+    SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY, SETTING_OPENAI_API_KEY, Storage,
+};
 use crate::types::{Shortcut, Transcription, TranscriptionHistoryEntry, TranscriptionStatus};
 
 /// Opaque handle to the FlowWhispr engine
@@ -1026,6 +1029,7 @@ pub extern "C" fn flowwispr_set_completion_provider(
                 set_last_error(handle, message);
                 return false;
             }
+            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key.clone())));
             handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
             debug!("Set completion provider to OpenAI");
         }
@@ -1045,6 +1049,7 @@ pub extern "C" fn flowwispr_set_completion_provider(
                 set_last_error(handle, message);
                 return false;
             }
+            handle.transcription = Arc::new(GeminiTranscriptionProvider::new(Some(key.clone())));
             handle.completion = Arc::new(GeminiCompletionProvider::new(Some(key)));
             debug!("Set completion provider to Gemini");
         }

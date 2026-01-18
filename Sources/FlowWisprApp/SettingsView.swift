@@ -106,7 +106,6 @@ struct APISettingsSection: View {
                         if selectedProvider == .openAI {
                             appState.setProvider(.openAI, apiKey: openAIKey)
                         }
-                        openAIKey = ""
                     }
                     .buttonStyle(FWSecondaryButtonStyle())
                     .disabled(openAIKey.isEmpty)
@@ -146,7 +145,6 @@ struct APISettingsSection: View {
                         if selectedProvider == .gemini {
                             appState.setProvider(.gemini, apiKey: geminiKey)
                         }
-                        geminiKey = ""
                     }
                     .buttonStyle(FWSecondaryButtonStyle())
                     .disabled(geminiKey.isEmpty)
@@ -312,7 +310,7 @@ struct AboutSection: View {
                 .foregroundStyle(FW.textSecondary)
 
             HStack(spacing: FW.spacing24) {
-                Link(destination: URL(string: "https://flowwispr.vercel.app/")!) {
+                Link(destination: URL(string: "https://gowithflow.tech")!) {
                     HStack(spacing: FW.spacing4) {
                         Image(systemName: "globe")
                         Text("Website")
