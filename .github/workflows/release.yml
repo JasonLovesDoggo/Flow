@@ -50,26 +50,26 @@ jobs:
         run: |
           cd flow-core
           cargo build --release --target aarch64-apple-darwin
-          ls -lh target/aarch64-apple-darwin/release/libflow_core.a
+          ls -lh target/aarch64-apple-darwin/release/libflow.a
 
       - name: Build Rust library for Intel (x86_64)
         run: |
           cd flow-core
           cargo build --release --target x86_64-apple-darwin
-          ls -lh target/x86_64-apple-darwin/release/libflow_core.a
+          ls -lh target/x86_64-apple-darwin/release/libflow.a
 
       - name: Create universal Rust library
         run: |
           cd flow-core
           mkdir -p target/release
           lipo -create \
-            target/aarch64-apple-darwin/release/libflow_core.a \
-            target/x86_64-apple-darwin/release/libflow_core.a \
-            -output target/release/libflow_core.a
+            target/aarch64-apple-darwin/release/libflow.a \
+            target/x86_64-apple-darwin/release/libflow.a \
+            -output target/release/libflow.a
 
           echo "Universal library created:"
-          lipo -info target/release/libflow_core.a
-          ls -lh target/release/libflow_core.a
+          lipo -info target/release/libflow.a
+          ls -lh target/release/libflow.a
 
       - name: Build Swift universal binary
         run: |
