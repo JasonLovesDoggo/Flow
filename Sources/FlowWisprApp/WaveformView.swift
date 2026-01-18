@@ -10,23 +10,26 @@ import SwiftUI
 struct WaveformView: View {
     let isRecording: Bool
     let barCount: Int
+    let audioLevel: Float?
 
     @State private var animationPhase: CGFloat = 0
+    @State private var lastRealLevel: Float = 0.0
 
-    init(isRecording: Bool, barCount: Int = 32) {
+    init(isRecording: Bool, barCount: Int = 32, audioLevel: Float? = nil) {
         self.isRecording = isRecording
         self.barCount = barCount
+        self.audioLevel = audioLevel
     }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1/30)) { timeline in
             Canvas { context, size in
-                let barWidth: CGFloat = 3
-                let gap: CGFloat = 2
+                let barWidth: CGFloat = 1.5
+                let gap: CGFloat = 2.5
                 let totalWidth = CGFloat(barCount) * (barWidth + gap) - gap
                 let startX = (size.width - totalWidth) / 2
-                let maxHeight = size.height * 0.8
-                let minHeight: CGFloat = 4
+                let maxHeight = size.height * 0.85
+                let minHeight = size.height * 0.15
 
                 let time = timeline.date.timeIntervalSinceReferenceDate
 
@@ -35,14 +38,43 @@ struct WaveformView: View {
 
                     // generate wave height based on position and time
                     let basePhase = Double(i) / Double(barCount) * .pi * 2
-                    let timePhase = time * (isRecording ? 4 : 0.5)
+                    let timePhase = time * (isRecording ? 3.5 : 0.5)
 
-                    let wave1 = sin(basePhase + timePhase) * 0.3
-                    let wave2 = sin(basePhase * 2.3 + timePhase * 1.3) * 0.2
-                    let wave3 = sin(basePhase * 0.7 + timePhase * 0.7) * 0.15
+                    let wave1 = sin(basePhase + timePhase) * 0.35
+                    let wave2 = sin(basePhase * 2.3 + timePhase * 1.3) * 0.25
+                    let wave3 = sin(basePhase * 0.7 + timePhase * 0.7) * 0.2
 
-                    var amplitude = isRecording ? 0.5 + wave1 + wave2 + wave3 : 0.15 + wave1 * 0.2 + wave2 * 0.1
-                    amplitude = max(0.05, min(1.0, amplitude))
+                    // Update last real level when we have valid audio data
+                    var currentLevel = lastRealLevel
+                    if let level = audioLevel, level > 0.01 {
+                        currentLevel = level
+                        if i == 0 {
+                            // Only update state once per frame (on first bar)
+                            DispatchQueue.main.async {
+                                lastRealLevel = level
+                            }
+                        }
+                    } else if i == 0 && lastRealLevel > 0.01 {
+                        // Gradually decay the last real level when no new data
+                        let decayedLevel = lastRealLevel * 0.92
+                        DispatchQueue.main.async {
+                            lastRealLevel = decayedLevel
+                        }
+                    }
+
+                    var amplitude: Double
+                    if currentLevel > 0.01 {
+                        // Use real audio level (current or decaying) with wave modulation
+                        let levelAmplitude = Double(currentLevel) * 0.75 + 0.15
+                        let waveModulation = (wave1 + wave2 + wave3) * 0.3
+                        amplitude = levelAmplitude + waveModulation
+                    } else {
+                        // Only use fake animation when level has decayed to near zero
+                        amplitude = isRecording
+                            ? 0.5 + wave1 + wave2 + wave3
+                            : 0.35 + wave1 * 0.5 + wave2 * 0.4
+                    }
+                    amplitude = max(0.15, min(1.0, amplitude))
 
                     let height = minHeight + (maxHeight - minHeight) * amplitude
                     let y = (size.height - height) / 2
@@ -87,10 +119,16 @@ struct WaveformView: View {
 
 struct CompactWaveformView: View {
     let isRecording: Bool
+    let audioLevel: Float?
+
+    init(isRecording: Bool, audioLevel: Float? = nil) {
+        self.isRecording = isRecording
+        self.audioLevel = audioLevel
+    }
 
     var body: some View {
-        WaveformView(isRecording: isRecording, barCount: 12)
-            .frame(width: 60, height: 24)
+        WaveformView(isRecording: isRecording, barCount: 9, audioLevel: audioLevel)
+            .frame(width: 50, height: 14)
     }
 }
 

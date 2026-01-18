@@ -48,6 +48,11 @@ uint64_t flowwispr_stop_recording(FlowWhisprHandle* handle);
 /// @return true if recording
 bool flowwispr_is_recording(FlowWhisprHandle* handle);
 
+/// Get current audio level (RMS amplitude) from the recording
+/// @param handle Engine handle
+/// @return Value between 0.0 and 1.0, or 0.0 if not recording
+float flowwispr_get_audio_level(FlowWhisprHandle* handle);
+
 // ============ Transcription ============
 
 /// Transcribe the recorded audio and process it

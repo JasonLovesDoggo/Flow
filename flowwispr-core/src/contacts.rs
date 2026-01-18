@@ -341,19 +341,19 @@ mod tests {
         let cases = vec![
             ContactInput {
                 name: "Bae".to_string(),
-                organization: "Acme Corp".to_string()
+                organization: "Acme Corp".to_string(),
             },
             ContactInput {
                 name: "❤️ Alex".to_string(),
-                organization: "Tech Inc".to_string()
+                organization: "Tech Inc".to_string(),
             },
             ContactInput {
                 name: "My Love".to_string(),
-                organization: "Business LLC".to_string()
+                organization: "Business LLC".to_string(),
             },
             ContactInput {
                 name: "Hubby 💍".to_string(),
-                organization: "Company XYZ".to_string()
+                organization: "Company XYZ".to_string(),
             },
         ];
 

@@ -181,6 +181,13 @@ public final class FlowWispr: @unchecked Sendable {
         return flowwispr_is_recording(handle)
     }
 
+    /// Get current audio level (RMS amplitude) from the recording
+    /// - Returns: A value between 0.0 and 1.0, or 0.0 if not recording
+    public var audioLevel: Float {
+        guard let handle = handle else { return 0.0 }
+        return flowwispr_get_audio_level(handle)
+    }
+
     // MARK: - Transcription
 
     /// Transcribe the recorded audio and process it

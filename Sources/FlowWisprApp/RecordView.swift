@@ -71,7 +71,7 @@ struct RecordView: View {
     private var heroSection: some View {
         VStack(spacing: FW.spacing24) {
             // waveform visualization
-            WaveformView(isRecording: appState.isRecording)
+            WaveformView(isRecording: appState.isRecording, audioLevel: appState.smoothedAudioLevel)
                 .frame(height: 80)
                 .padding(.horizontal, FW.spacing16)
 
@@ -112,13 +112,13 @@ struct RecordView: View {
 
     private var contextBar: some View {
         HStack(spacing: FW.spacing16) {
-            // current app
+            // target app (the app we're configuring, not FlowWispr)
             HStack(spacing: FW.spacing8) {
                 Image(systemName: "app.fill")
                     .font(.caption)
                     .foregroundStyle(FW.accent)
 
-                Text(appState.currentApp)
+                Text(appState.targetAppName)
                     .font(.subheadline)
                     .foregroundStyle(FW.textPrimary)
                     .lineLimit(1)

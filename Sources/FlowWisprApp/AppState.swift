@@ -21,6 +21,8 @@ final class AppState: ObservableObject {
     @Published var isRecording = false
     @Published var isProcessing = false
     @Published var isInitializingModel = false
+    @Published var audioLevel: Float = 0.0
+    @Published var smoothedAudioLevel: Float = 0.0
 
     /// Last transcribed text
     @Published var lastTranscription: String?
@@ -28,11 +30,17 @@ final class AppState: ObservableObject {
     /// Current writing mode
     @Published var currentMode: WritingMode = .casual
 
-    /// Current app name
+    /// Current app name (tracks frontmost app, including FlowWispr itself)
     @Published var currentApp: String = "Unknown"
 
     /// Current app category
     @Published var currentCategory: AppCategory = .unknown
+
+    /// Target app for mode configuration (the app before FlowWispr became active)
+    @Published var targetAppName: String = "Unknown"
+    @Published var targetAppBundleId: String?
+    @Published var targetAppMode: WritingMode = .casual
+    @Published var targetAppCategory: AppCategory = .unknown
 
     /// Recent transcriptions
     @Published var history: [TranscriptionSummary] = []
@@ -59,6 +67,7 @@ final class AppState: ObservableObject {
     /// Workspace observer for app changes
     private var workspaceObserver: NSObjectProtocol?
     private var recordingTimer: Timer?
+    private var audioLevelTimer: Timer?
     private var modelLoadingTimer: Timer?
     private var globeKeyHandler: GlobeKeyHandler?
     private var hotkeyCaptureMonitor: Any?
@@ -102,6 +111,8 @@ final class AppState: ObservableObject {
         }
         recordingTimer?.invalidate()
         recordingTimer = nil
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
         modelLoadingTimer?.invalidate()
         modelLoadingTimer = nil
         endHotkeyCapture()
@@ -119,6 +130,7 @@ final class AppState: ObservableObject {
     }
 
     private func handleHotkeyTrigger(_ trigger: GlobeKeyHandler.Trigger) {
+        print("🎹 [HOTKEY] Trigger detected: \(trigger)")
         switch trigger {
         case .pressed:
             if !isRecording {
@@ -345,13 +357,31 @@ final class AppState: ObservableObject {
 
     private func handleAppActivation(appName: String, bundleId: String?) {
         currentApp = appName
-        let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
-        currentCategory = engine.currentAppCategory
 
-        if let styleSuggestion = engine.styleSuggestion {
-            currentMode = styleSuggestion
+        // Check if FlowWispr itself became active
+        let isFlowWispr = bundleId == Bundle.main.bundleIdentifier
+
+        if !isFlowWispr {
+            // This is an external app - save it as the target for mode configuration
+            targetAppName = appName
+            targetAppBundleId = bundleId
+
+            let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
+            currentCategory = engine.currentAppCategory
+            targetAppCategory = currentCategory
+
+            if let styleSuggestion = engine.styleSuggestion {
+                currentMode = styleSuggestion
+                targetAppMode = styleSuggestion
+            } else {
+                currentMode = suggestedMode
+                targetAppMode = suggestedMode
+            }
         } else {
-            currentMode = suggestedMode
+            // FlowWispr became active - preserve the target app for mode changes
+            // Update currentMode to reflect the target app's mode
+            currentMode = targetAppMode
+            currentCategory = targetAppCategory
         }
     }
 
@@ -361,9 +391,22 @@ final class AppState: ObservableObject {
             let bundleId = frontApp.bundleIdentifier
 
             currentApp = appName
+
+            // Initialize target app if this is not FlowWispr
+            let isFlowWispr = bundleId == Bundle.main.bundleIdentifier
+            if !isFlowWispr {
+                targetAppName = appName
+                targetAppBundleId = bundleId
+            }
+
             let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
             currentCategory = engine.currentAppCategory
             currentMode = suggestedMode
+
+            if !isFlowWispr {
+                targetAppMode = suggestedMode
+                targetAppCategory = currentCategory
+            }
         }
     }
 
@@ -384,12 +427,14 @@ final class AppState: ObservableObject {
         }
 
         targetApplication = NSWorkspace.shared.frontmostApplication
+        print("🎤 [RECORDING] Starting recording - App: \(currentApp), Mode: \(currentMode.displayName)")
         pauseMediaPlayback()
         if engine.startRecording() {
             isRecording = true
             isProcessing = false
             updateRecordingIndicatorVisibility()
             recordingDuration = 0
+            print("✅ [RECORDING] Recording started successfully")
 
             Analytics.shared.track("Recording Started", eventProperties: [
                 "app_name": currentApp,
@@ -403,6 +448,18 @@ final class AppState: ObservableObject {
                     self.recordingDuration += 100
                 }
             }
+
+            audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 1/30, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRecording else { return }
+                    let newLevel = self.engine.audioLevel
+                    self.audioLevel = newLevel
+                    // Smooth the audio level with exponential moving average
+                    // Higher smoothing factor = smoother but slower response
+                    let smoothingFactor: Float = 0.3
+                    self.smoothedAudioLevel = self.smoothedAudioLevel * (1 - smoothingFactor) + newLevel * smoothingFactor
+                }
+            }
         } else {
             errorMessage = engine.lastError ?? "Failed to start recording"
             resumeMediaPlayback()
@@ -410,14 +467,19 @@ final class AppState: ObservableObject {
     }
 
     func stopRecording() {
+        print("⏹️ [RECORDING] Stopping recording - Duration: \(recordingDuration)ms")
         recordingTimer?.invalidate()
         recordingTimer = nil
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
+        audioLevel = 0.0
 
         let duration = engine.stopRecording()
         isRecording = false
         resumeMediaPlayback()
 
         if duration > 0 {
+            print("✅ [RECORDING] Recording stopped successfully - Duration: \(duration)ms")
             Analytics.shared.track("Recording Stopped", eventProperties: [
                 "duration_ms": recordingDuration,
                 "app_name": currentApp
@@ -425,6 +487,7 @@ final class AppState: ObservableObject {
             setProcessing(true)
             transcribe()
         } else {
+            print("⚠️ [RECORDING] Recording cancelled (too short)")
             Analytics.shared.track("Recording Cancelled", eventProperties: [
                 "duration_ms": recordingDuration,
                 "app_name": currentApp
@@ -434,41 +497,57 @@ final class AppState: ObservableObject {
     }
 
     private func transcribe() {
-        Task {
-            let result = engine.transcribe(appName: currentApp)
-            await MainActor.run {
+        let appName = currentApp
+        let appCategory = currentCategory
+        let mode = currentMode
+        let duration = recordingDuration
+
+        print("🔄 [TRANSCRIBE] Starting transcription - App: \(appName), Mode: \(mode.displayName)")
+
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let result = await Task {
+                self.engine.transcribe(appName: appName)
+            }.value
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 if let text = result {
-                    lastTranscription = text
-                    errorMessage = nil
+                    print("✅ [TRANSCRIBE] Transcription completed - Length: \(text.count) chars")
+                    print("📝 [TRANSCRIBE] Result: \(text.prefix(100))...")
+                    self.lastTranscription = text
+                    self.errorMessage = nil
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
+                    print("📋 [CLIPBOARD] Text copied to clipboard")
 
                     Analytics.shared.track("Transcription Completed", eventProperties: [
-                        "app_name": currentApp,
-                        "app_category": currentCategory.rawValue,
-                        "writing_mode": currentMode.rawValue,
-                        "duration_ms": recordingDuration,
+                        "app_name": appName,
+                        "app_category": appCategory.rawValue,
+                        "writing_mode": mode.rawValue,
+                        "duration_ms": duration,
                         "text_length": text.count
                     ])
 
-                    activateTargetAppIfNeeded()
+                    self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
                         self?.finishProcessing()
                     }
-                    refreshHistory()
+                    self.refreshHistory()
                 } else {
-                    let errorMsg = engine.lastError ?? "Transcription failed"
-                    errorMessage = errorMsg
+                    let errorMsg = self.engine.lastError ?? "Transcription failed"
+                    print("❌ [TRANSCRIBE] Transcription failed: \(errorMsg)")
+                    self.errorMessage = errorMsg
 
                     Analytics.shared.track("Transcription Failed", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "error": errorMsg,
-                        "duration_ms": recordingDuration
+                        "duration_ms": duration
                     ])
 
-                    refreshHistory()
-                    finishProcessing()
+                    self.refreshHistory()
+                    self.finishProcessing()
                 }
             }
         }
@@ -476,47 +555,55 @@ final class AppState: ObservableObject {
 
     func retryLastTranscription() {
         setProcessing(true)
+        let appName = currentApp
+
         Analytics.shared.track("Transcription Retry Attempted", eventProperties: [
-            "app_name": currentApp
+            "app_name": appName
         ])
 
-        Task {
-            let result = engine.retryLastTranscription(appName: currentApp)
-            await MainActor.run {
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let result = await Task {
+                self.engine.retryLastTranscription(appName: appName)
+            }.value
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 if let text = result {
-                    lastTranscription = text
-                    errorMessage = nil
+                    self.lastTranscription = text
+                    self.errorMessage = nil
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
 
                     Analytics.shared.track("Transcription Retry Succeeded", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "text_length": text.count
                     ])
 
-                    activateTargetAppIfNeeded()
+                    self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
                         self?.finishProcessing()
                     }
-                    refreshHistory()
+                    self.refreshHistory()
                 } else {
-                    let errorMsg = engine.lastError ?? "Retry failed"
-                    errorMessage = errorMsg
+                    let errorMsg = self.engine.lastError ?? "Retry failed"
+                    self.errorMessage = errorMsg
 
                     Analytics.shared.track("Transcription Retry Failed", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "error": errorMsg
                     ])
 
-                    refreshHistory()
-                    finishProcessing()
+                    self.refreshHistory()
+                    self.finishProcessing()
                 }
             }
         }
     }
 
     private func pasteText() {
+        print("📌 [PASTE] Sending paste command (Cmd+V) to app: \(targetApplication?.localizedName ?? "Unknown")")
         let source = CGEventSource(stateID: .hidSystemState)
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
@@ -526,6 +613,7 @@ final class AppState: ObservableObject {
 
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+        print("✅ [PASTE] Paste command sent successfully")
 
         Analytics.shared.track("Text Pasted", eventProperties: [
             "target_app": targetApplication?.localizedName ?? "Unknown",
@@ -604,12 +692,14 @@ final class AppState: ObservableObject {
     }
 
     func setMode(_ mode: WritingMode) {
-        if engine.setMode(mode, for: currentApp) {
+        // Always set the mode for the target app (not FlowWispr itself)
+        if engine.setMode(mode, for: targetAppName) {
             currentMode = mode
+            targetAppMode = mode
             Analytics.shared.track("Writing Mode Changed", eventProperties: [
                 "mode": mode.rawValue,
-                "app_name": currentApp,
-                "app_category": currentCategory.rawValue
+                "app_name": targetAppName,
+                "app_category": targetAppCategory.rawValue
             ])
         }
     }

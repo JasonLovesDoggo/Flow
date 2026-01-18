@@ -23,11 +23,11 @@ final class RecordingIndicatorWindow {
         panel.level = .statusBar
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
-        panel.setFrame(NSRect(x: 0, y: 0, width: 400, height: 40), display: false)
+        panel.setFrame(NSRect(x: 0, y: 0, width: 400, height: 32), display: false)
 
         self.window = panel
         positionWindow()
@@ -35,11 +35,33 @@ final class RecordingIndicatorWindow {
 
     func show() {
         positionWindow()
+        window.alphaValue = 0
         window.orderFrontRegardless()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = 1
+        }
     }
 
     func hide() {
-        window.orderOut(nil)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.4
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            window.animator().alphaValue = 0
+
+            // Slide down slightly
+            var frame = window.frame
+            frame.origin.y -= 15
+            window.animator().setFrame(frame, display: true)
+        }, completionHandler: {
+            self.window.orderOut(nil)
+            self.window.alphaValue = 1
+            Task { @MainActor in
+                self.positionWindow() // Reset position for next show
+            }
+        })
     }
 
     private func positionWindow() {
@@ -59,16 +81,20 @@ private struct RecordingIndicatorView: View {
     @EnvironmentObject var appState: AppState
     @State private var pulse = false
 
+    var showPill: Bool {
+        appState.isRecording || appState.isProcessing || appState.isInitializingModel
+    }
+
     var body: some View {
-        HStack(spacing: FW.spacing8) {
+        HStack(spacing: FW.spacing6) {
             Circle()
                 .fill(appState.isRecording ? FW.recording : FW.accent)
                 .frame(width: 8, height: 8)
                 .opacity(pulse ? 0.6 : 1.0)
 
             if appState.isRecording {
-                CompactWaveformView(isRecording: true)
-                    .frame(width: 90, height: 18)
+                CompactWaveformView(isRecording: true, audioLevel: appState.smoothedAudioLevel)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
 
             if appState.isProcessing && !appState.isInitializingModel {
@@ -76,6 +102,11 @@ private struct RecordingIndicatorView: View {
                     .progressViewStyle(.circular)
                     .controlSize(.small)
                     .tint(.white.opacity(0.9))
+                    .frame(width: 50, height: 14)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.5)).animation(.spring(response: 0.65, dampingFraction: 0.75).delay(0.35)),
+                        removal: .opacity.combined(with: .scale(scale: 0.8)).animation(.spring(response: 0.5, dampingFraction: 0.75))
+                    ))
             }
 
             if appState.isInitializingModel {
@@ -88,22 +119,25 @@ private struct RecordingIndicatorView: View {
                     Text("Initializing Whisper model...")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(1)
                 }
+                .frame(height: 14)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.5)).animation(.spring(response: 0.65, dampingFraction: 0.75).delay(0.35)),
+                    removal: .opacity.combined(with: .scale(scale: 0.8)).animation(.spring(response: 0.5, dampingFraction: 0.75))
+                ))
             }
         }
-        .padding(.horizontal, FW.spacing12)
+        .padding(.horizontal, 10)
         .padding(.vertical, FW.spacing6)
-        .background {
+        .background(
             Capsule()
                 .fill(Color.black.opacity(0.55))
-                .overlay {
-                    Capsule()
-                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
-                }
-        }
-        .animation(.easeInOut(duration: 0.25), value: appState.isRecording)
-        .animation(.easeInOut(duration: 0.25), value: appState.isProcessing)
-        .animation(.easeInOut(duration: 0.25), value: appState.isInitializingModel)
+        )
+        .compositingGroup()
+        .animation(.spring(response: 0.85, dampingFraction: 0.82), value: appState.isRecording)
+        .animation(.spring(response: 0.85, dampingFraction: 0.82), value: appState.isProcessing)
+        .animation(.spring(response: 0.85, dampingFraction: 0.82), value: appState.isInitializingModel)
         .onAppear {
             withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
                 pulse = true

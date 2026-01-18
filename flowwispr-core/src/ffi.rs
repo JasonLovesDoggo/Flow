@@ -372,6 +372,24 @@ pub extern "C" fn flowwispr_is_recording(handle: *mut FlowWhisprHandle) -> bool 
     }
 }
 
+/// Get current audio level (RMS amplitude) from the recording
+/// Returns a value between 0.0 and 1.0, or 0.0 if not recording
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_audio_level(handle: *mut FlowWhisprHandle) -> f32 {
+    let handle = unsafe { &*handle };
+    let audio_lock = handle.audio.lock();
+
+    if let Some(ref capture) = *audio_lock {
+        if capture.state() == CaptureState::Recording {
+            capture.current_audio_level()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    }
+}
+
 // ============ Transcription ============
 
 fn transcribe_with_audio(
@@ -426,14 +444,23 @@ fn transcribe_with_audio(
     let completion_provider = Arc::clone(&handle.completion);
     let app_context = handle.app_tracker.current_app();
 
+    eprintln!("🎧 [RUST/TRANSCRIBE] Starting speech-to-text transcription");
     let transcription = handle.runtime.block_on(async {
         let request = TranscriptionRequest::new(audio_data, sample_rate);
         transcription_provider.transcribe(request).await
     })?;
+    eprintln!(
+        "✅ [RUST/TRANSCRIBE] Speech-to-text completed - Raw text: {} chars",
+        transcription.text.len()
+    );
 
     let (text_with_shortcuts, triggered) = handle.shortcuts.process(&transcription.text);
     let (text_with_corrections, _applied) = handle.learning.apply_corrections(&text_with_shortcuts);
 
+    eprintln!(
+        "🤖 [RUST/AI] Starting AI completion with mode: {:?}",
+        mode
+    );
     let completion_result = handle.runtime.block_on(async {
         let mut completion_request = if let Some(name) = app_name.clone() {
             CompletionRequest::new(text_with_corrections.clone(), mode).with_app_context(name)
@@ -458,9 +485,15 @@ fn transcribe_with_audio(
     });
 
     let processed_text = match completion_result {
-        Ok(completion) => completion.text,
+        Ok(completion) => {
+            eprintln!(
+                "✅ [RUST/AI] AI completion succeeded - Output: {} chars",
+                completion.text.len()
+            );
+            completion.text
+        }
         Err(err) => {
-            error!("Completion failed, using corrected text: {}", err);
+            eprintln!("❌ [RUST/AI] Completion failed, using corrected text: {}", err);
             text_with_corrections.clone()
         }
     };
