@@ -156,7 +156,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           APP_NAME="Flow"
-          DMG_NAME="Flow-${VERSION}-macOS-universal.dmg"
+          DMG_NAME="Flow-macOS-universal.dmg"
 
           hdiutil create \
             -volname "${APP_NAME}" \
