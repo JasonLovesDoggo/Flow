@@ -71,16 +71,25 @@ jobs:
           lipo -info target/release/libflow.a
           ls -lh target/release/libflow.a
 
-      - name: Build Swift universal binary
+      - name: Build Swift for Apple Silicon (arm64)
         run: |
-          swift build -c release --arch arm64 --arch x86_64
+          swift build -c release --arch arm64
+          cp .build/arm64-apple-macosx/release/Flow .build/Flow-arm64
 
-          echo "Swift build products:"
-          ls -lh .build/apple/Products/Release/
+      - name: Build Swift for Intel (x86_64)
+        run: |
+          swift build -c release --arch x86_64
+          cp .build/x86_64-apple-macosx/release/Flow .build/Flow-x86_64
+
+      - name: Create Swift universal binary
+        run: |
+          lipo -create .build/Flow-arm64 .build/Flow-x86_64 -output .build/Flow
+          echo "Universal binary created:"
+          lipo -info .build/Flow
 
       - name: Verify universal binary
         run: |
-          lipo -info .build/apple/Products/Release/Flow
+          lipo -info .build/Flow
 
       - name: Create .app bundle structure
         env:
@@ -95,7 +104,7 @@ jobs:
           mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
           # Copy executable
-          cp .build/apple/Products/Release/Flow "${APP_BUNDLE}/Contents/MacOS/Flow"
+          cp .build/Flow "${APP_BUNDLE}/Contents/MacOS/Flow"
           chmod +x "${APP_BUNDLE}/Contents/MacOS/Flow"
 
           # Copy resources
