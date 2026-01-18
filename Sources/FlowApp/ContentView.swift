@@ -10,6 +10,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredTab: AppTab?
 
     var body: some View {
@@ -25,6 +26,7 @@ struct ContentView: View {
                                 .resizable()
                                 .frame(width: 24, height: 24)
                                 .cornerRadius(5)
+                                .if(colorScheme == .dark) { $0.colorInvert() }
                         }
 
                         Text("Flow")
