@@ -102,6 +102,9 @@ jobs:
           if [ -f "menubar.svg" ]; then
             cp menubar.svg "${APP_BUNDLE}/Contents/Resources/"
           fi
+          if [ -f "AppIcon.icns" ]; then
+            cp AppIcon.icns "${APP_BUNDLE}/Contents/Resources/"
+          fi
 
           # Create Info.plist
           cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
@@ -119,6 +122,8 @@ jobs:
               <string>6.0</string>
               <key>CFBundleName</key>
               <string>${APP_NAME}</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>

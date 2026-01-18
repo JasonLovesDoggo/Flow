@@ -19,6 +19,8 @@ struct SettingsContentView: View {
                 Divider()
                 AccessibilitySection()
                 Divider()
+                LearningStatsSection()
+                Divider()
                 AboutSection()
             }
             .padding(FW.spacing24)
@@ -38,7 +40,10 @@ struct APISettingsSection: View {
     @State private var showOpenRouterKey = false
     @State private var selectedProvider: CompletionProvider = .openAI
     @State private var useLocalTranscription = false
-    @State private var selectedWhisperModel: WhisperModel = .base
+    @State private var selectedWhisperModel: WhisperModel = .quality
+    @State private var existingOpenAIKey: String?
+    @State private var existingGeminiKey: String?
+    @State private var existingOpenRouterKey: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: FW.spacing16) {
@@ -59,15 +64,16 @@ struct APISettingsSection: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .onChange(of: selectedProvider) { _, newProvider in
-                    // Switch provider when selection changes
-                    let apiKey: String
-                    switch newProvider {
-                    case .openAI: apiKey = openAIKey
-                    case .gemini: apiKey = geminiKey
-                    case .openRouter: apiKey = openRouterKey
-                    }
-                    if !apiKey.isEmpty {
-                        appState.setProvider(newProvider, apiKey: apiKey)
+                    // Switch provider using saved API key from database
+                    if !appState.engine.switchCompletionProvider(newProvider) {
+                        // Switch failed, revert selection
+                        if let current = appState.engine.completionProvider {
+                            selectedProvider = current
+                        }
+                        appState.errorMessage = appState.engine.lastError ?? "Failed to switch provider. Make sure you've saved an API key for \(newProvider.displayName)."
+                    } else {
+                        appState.isConfigured = appState.engine.isConfigured
+                        appState.errorMessage = nil
                     }
                 }
                 .onAppear {
@@ -111,18 +117,24 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setApiKey(openAIKey)
-                        if selectedProvider == .openAI {
-                            appState.setProvider(.openAI, apiKey: openAIKey)
-                        }
+                        appState.setApiKey(openAIKey, for: .openAI)
+                        // Refresh the masked key display
+                        existingOpenAIKey = appState.engine.maskedOpenAIKey
+                        openAIKey = ""
                     }
                     .buttonStyle(FWSecondaryButtonStyle())
                     .disabled(openAIKey.isEmpty)
                 }
 
-                Text("Required for transcription")
-                    .font(.caption)
-                    .foregroundStyle(FW.textTertiary)
+                if let existing = existingOpenAIKey {
+                    Text("Currently configured: \(existing)")
+                        .font(.caption)
+                        .foregroundStyle(FW.success)
+                } else {
+                    Text("Required for transcription")
+                        .font(.caption)
+                        .foregroundStyle(FW.textTertiary)
+                }
             }
 
             // Gemini
@@ -150,18 +162,24 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setGeminiApiKey(geminiKey)
-                        if selectedProvider == .gemini {
-                            appState.setProvider(.gemini, apiKey: geminiKey)
-                        }
+                        appState.setApiKey(geminiKey, for: .gemini)
+                        // Refresh the masked key display
+                        existingGeminiKey = appState.engine.maskedGeminiKey
+                        geminiKey = ""
                     }
                     .buttonStyle(FWSecondaryButtonStyle())
                     .disabled(geminiKey.isEmpty)
                 }
 
-                Text("Alternative provider for transcription and completion")
-                    .font(.caption)
-                    .foregroundStyle(FW.textTertiary)
+                if let existing = existingGeminiKey {
+                    Text("Currently configured: \(existing)")
+                        .font(.caption)
+                        .foregroundStyle(FW.success)
+                } else {
+                    Text("Alternative provider for transcription and completion")
+                        .font(.caption)
+                        .foregroundStyle(FW.textTertiary)
+                }
             }
 
             // OpenRouter
@@ -189,18 +207,24 @@ struct APISettingsSection: View {
                     .buttonStyle(.borderless)
 
                     Button("Save") {
-                        appState.setOpenRouterApiKey(openRouterKey)
-                        if selectedProvider == .openRouter {
-                            appState.setProvider(.openRouter, apiKey: openRouterKey)
-                        }
+                        appState.setApiKey(openRouterKey, for: .openRouter)
+                        // Refresh the masked key display
+                        existingOpenRouterKey = appState.engine.maskedOpenRouterKey
+                        openRouterKey = ""
                     }
                     .buttonStyle(FWSecondaryButtonStyle())
                     .disabled(openRouterKey.isEmpty)
                 }
 
-                Text("Access multiple LLM providers (Llama, Claude, GPT, etc.)")
-                    .font(.caption)
-                    .foregroundStyle(FW.textTertiary)
+                if let existing = existingOpenRouterKey {
+                    Text("Currently configured: \(existing)")
+                        .font(.caption)
+                        .foregroundStyle(FW.success)
+                } else {
+                    Text("Access multiple LLM providers (Llama, Claude, GPT, etc.)")
+                        .font(.caption)
+                        .foregroundStyle(FW.textTertiary)
+                }
             }
 
             Divider()
@@ -227,12 +251,25 @@ struct APISettingsSection: View {
                             .foregroundStyle(FW.textSecondary)
 
                         Picker("", selection: $selectedWhisperModel) {
-                            ForEach([WhisperModel.tiny, WhisperModel.base, WhisperModel.small], id: \.rawValue) { model in
-                                VStack(alignment: .leading) {
-                                    Text(model.displayName)
-                                    Text(model.sizeDescription)
-                                        .font(.caption2)
-                                        .foregroundStyle(FW.textTertiary)
+                            ForEach([WhisperModel.turbo, WhisperModel.fast, WhisperModel.balanced, WhisperModel.quality, WhisperModel.best], id: \.rawValue) { model in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        HStack(spacing: 4) {
+                                            Text(model.displayName)
+                                            if model == .quality {
+                                                Text("Recommended")
+                                                    .font(.caption2)
+                                                    .padding(.horizontal, 4)
+                                                    .padding(.vertical, 1)
+                                                    .background(FW.accent.opacity(0.2))
+                                                    .foregroundStyle(FW.accent)
+                                                    .cornerRadius(4)
+                                            }
+                                        }
+                                        Text(model.sizeDescription)
+                                            .font(.caption2)
+                                            .foregroundStyle(FW.textTertiary)
+                                    }
                                 }
                                 .tag(model)
                             }
@@ -242,7 +279,7 @@ struct APISettingsSection: View {
                             _ = appState.engine.setTranscriptionMode(.local(model: newModel))
                         }
 
-                        Text("Model will download automatically on first use")
+                        Text("Model will be downloaded when selected")
                             .font(.caption2)
                             .foregroundStyle(FW.textTertiary)
                     }
@@ -264,6 +301,28 @@ struct APISettingsSection: View {
                     .foregroundStyle(appState.isConfigured ? FW.success : FW.warning)
             }
             .padding(.top, FW.spacing8)
+        }
+        .onAppear {
+            // Load current provider
+            if let current = appState.engine.completionProvider {
+                selectedProvider = current
+            }
+
+            // Load masked API keys to show they're configured
+            existingOpenAIKey = appState.engine.maskedOpenAIKey
+            existingGeminiKey = appState.engine.maskedGeminiKey
+            existingOpenRouterKey = appState.engine.maskedOpenRouterKey
+
+            // Load transcription mode settings from database
+            if let mode = appState.engine.getTranscriptionMode() {
+                switch mode {
+                case .local(let model):
+                    useLocalTranscription = true
+                    selectedWhisperModel = model
+                case .remote:
+                    useLocalTranscription = false
+                }
+            }
         }
     }
 }
@@ -379,6 +438,114 @@ struct AccessibilitySection: View {
     }
 }
 
+// MARK: - Learning Stats
+
+struct LearningStatsSection: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FW.spacing16) {
+            Label("Learning System", systemImage: "brain")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: FW.spacing12) {
+                // Correction count
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Learned Corrections")
+                            .font(.subheadline.weight(.medium))
+                        Text("Auto-applies high-confidence fixes")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(appState.engine.correctionCount)")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FW.accent)
+                }
+                .padding(FW.spacing12)
+                .background(FW.accent.opacity(0.1))
+                .cornerRadius(8)
+
+                // Shortcut count
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Voice Shortcuts")
+                            .font(.subheadline.weight(.medium))
+                        Text("Custom expansions you've created")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(appState.engine.shortcutCount)")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(FW.accent)
+                }
+                .padding(FW.spacing12)
+                .background(FW.accent.opacity(0.1))
+                .cornerRadius(8)
+
+                // Style suggestion
+                if let suggestion = appState.engine.styleSuggestion {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Suggested Style for \(appState.currentApp)")
+                                .font(.subheadline.weight(.medium))
+                            Text("Based on your writing patterns")
+                                .font(.caption)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+                        Spacer()
+                        Text(suggestion.displayName)
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(FW.success)
+                    }
+                    .padding(FW.spacing12)
+                    .background(FW.success.opacity(0.1))
+                    .cornerRadius(8)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Style Learning")
+                            .font(.subheadline.weight(.medium))
+                        Text("Need 3+ samples in \(appState.currentApp) to suggest a style")
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                    }
+                    .padding(FW.spacing12)
+                    .background(FW.textTertiary.opacity(0.05))
+                    .cornerRadius(8)
+                }
+
+                // Total stats
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("All-Time Stats")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(FW.textSecondary)
+
+                    HStack(spacing: FW.spacing24) {
+                        VStack(spacing: 4) {
+                            Text("\(appState.totalTranscriptions)")
+                                .font(.title3.weight(.semibold))
+                            Text("Transcriptions")
+                                .font(.caption2)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+
+                        VStack(spacing: 4) {
+                            Text("\(appState.totalMinutes)")
+                                .font(.title3.weight(.semibold))
+                            Text("Minutes")
+                                .font(.caption2)
+                                .foregroundStyle(FW.textTertiary)
+                        }
+                    }
+                }
+                .padding(.top, FW.spacing8)
+            }
+        }
+    }
+}
+
 // MARK: - About
 
 struct AboutSection: View {
@@ -399,7 +566,7 @@ struct AboutSection: View {
                 Text("Flow")
                     .font(.title3.weight(.semibold))
 
-                Text("v1.0.0")
+                Text("v0.1.7")
                     .font(FW.fontMonoSmall)
                     .foregroundStyle(FW.textTertiary)
             }

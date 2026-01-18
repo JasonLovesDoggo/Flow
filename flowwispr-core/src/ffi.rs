@@ -11,6 +11,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -19,7 +20,9 @@ use tracing::{debug, error};
 
 use crate::apps::AppTracker;
 use crate::audio::{AudioCapture, CaptureState};
+use crate::contacts::{ContactClassifier, ContactInput};
 use crate::learning::LearningEngine;
+use crate::macos_messages::MessagesDetector;
 use crate::modes::{StyleLearner, WritingMode, WritingModeEngine};
 use crate::providers::{
     CompletionProvider, CompletionRequest, GeminiCompletionProvider, GeminiTranscriptionProvider,
@@ -48,6 +51,10 @@ pub struct FlowWhisprHandle {
     modes: Mutex<WritingModeEngine>,
     app_tracker: AppTracker,
     style_learner: Mutex<StyleLearner>,
+    is_model_loading: Arc<AtomicBool>,
+    contact_classifier: ContactClassifier,
+    /// Captured contact name at recording start (for Messages.app context)
+    captured_contact: Mutex<Option<String>>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +62,7 @@ struct TranscriptionSummary {
     id: String,
     status: TranscriptionStatus,
     text: String,
+    raw_text: String,
     error: Option<String>,
     duration_ms: u64,
     created_at: String,
@@ -68,6 +76,18 @@ fn set_last_error(handle: &FlowWhisprHandle, message: impl Into<String>) {
     *handle.last_error.lock() = Some(message.into());
 }
 
+/// Check if Whisper model files exist in the models directory
+fn check_model_files_exist(model: WhisperModel, models_dir: &std::path::Path) -> bool {
+    let (model_id, _) = model.model_id();
+    let model_name = model_id.split('/').next_back().unwrap();
+
+    let config_path = models_dir.join(format!("{}-config.json", model_name));
+    let tokenizer_path = models_dir.join(format!("{}-tokenizer.json", model_name));
+    let weights_path = models_dir.join(format!("{}-model.safetensors", model_name));
+
+    config_path.exists() && tokenizer_path.exists() && weights_path.exists()
+}
+
 fn clear_last_error(handle: &FlowWhisprHandle) {
     *handle.last_error.lock() = None;
 }
@@ -78,16 +98,70 @@ fn estimate_duration_ms(bytes: usize, sample_rate: u32) -> u64 {
 }
 
 fn load_persisted_configuration(handle: &mut FlowWhisprHandle) {
-    let openai_key = match handle.storage.get_setting(SETTING_OPENAI_API_KEY) {
-        Ok(value) => value,
-        Err(e) => {
-            error!("Failed to load OpenAI key: {}", e);
-            None
-        }
-    };
+    // Load all API keys
+    let openai_key = handle
+        .storage
+        .get_setting(SETTING_OPENAI_API_KEY)
+        .ok()
+        .flatten();
+    let gemini_key = handle
+        .storage
+        .get_setting(SETTING_GEMINI_API_KEY)
+        .ok()
+        .flatten();
+    let openrouter_key = handle
+        .storage
+        .get_setting(SETTING_OPENROUTER_API_KEY)
+        .ok()
+        .flatten();
 
-    handle.transcription = Arc::new(OpenAITranscriptionProvider::new(openai_key.clone()));
-    handle.completion = Arc::new(OpenAICompletionProvider::new(openai_key));
+    // Load saved provider preference
+    let saved_provider = handle
+        .storage
+        .get_setting(SETTING_COMPLETION_PROVIDER)
+        .ok()
+        .flatten();
+
+    // Log what we found for debugging
+    tracing::info!("Loading persisted config:");
+    tracing::info!(
+        "  OpenAI key: {}",
+        if openai_key.is_some() { "SET" } else { "NONE" }
+    );
+    tracing::info!(
+        "  Gemini key: {}",
+        if gemini_key.is_some() { "SET" } else { "NONE" }
+    );
+    tracing::info!(
+        "  OpenRouter key: {}",
+        if openrouter_key.is_some() {
+            "SET"
+        } else {
+            "NONE"
+        }
+    );
+    tracing::info!("  Saved provider: {:?}", saved_provider);
+
+    // Initialize providers based on saved preference
+    match saved_provider.as_deref() {
+        Some("gemini") => {
+            debug!("Restoring Gemini provider from database");
+            handle.transcription = Arc::new(GeminiTranscriptionProvider::new(gemini_key.clone()));
+            handle.completion = Arc::new(GeminiCompletionProvider::new(gemini_key));
+        }
+        Some("openrouter") => {
+            debug!("Restoring OpenRouter provider from database");
+            // OpenRouter doesn't do transcription, use OpenAI for that
+            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(openai_key));
+            handle.completion = Arc::new(OpenRouterCompletionProvider::new(openrouter_key));
+        }
+        _ => {
+            // Default to OpenAI or if "openai" was explicitly saved
+            debug!("Restoring OpenAI provider from database");
+            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(openai_key.clone()));
+            handle.completion = Arc::new(OpenAICompletionProvider::new(openai_key));
+        }
+    }
 }
 
 // ============ Lifecycle ============
@@ -141,6 +215,7 @@ pub extern "C" fn flowwispr_init(db_path: *const c_char) -> *mut FlowWhisprHandl
     let modes = WritingModeEngine::new(WritingMode::Casual);
     let app_tracker = AppTracker::new();
     let style_learner = StyleLearner::new();
+    let contact_classifier = ContactClassifier::new();
 
     let mut handle = FlowWhisprHandle {
         runtime,
@@ -156,6 +231,9 @@ pub extern "C" fn flowwispr_init(db_path: *const c_char) -> *mut FlowWhisprHandl
         modes: Mutex::new(modes),
         app_tracker,
         style_learner: Mutex::new(style_learner),
+        is_model_loading: Arc::new(AtomicBool::new(false)),
+        contact_classifier,
+        captured_contact: Mutex::new(None),
     };
 
     load_persisted_configuration(&mut handle);
@@ -183,6 +261,42 @@ pub extern "C" fn flowwispr_destroy(handle: *mut FlowWhisprHandle) {
 #[unsafe(no_mangle)]
 pub extern "C" fn flowwispr_start_recording(handle: *mut FlowWhisprHandle) -> bool {
     let handle = unsafe { &*handle };
+
+    // Capture the active Messages contact at recording START (before any focus changes)
+    // This ensures we get the correct contact context for the transcription
+    let current_app = handle.app_tracker.current_app();
+    let is_messages = current_app
+        .as_ref()
+        .map(|ctx| {
+            ctx.app_name.to_lowercase().contains("messages")
+                || ctx.bundle_id.as_deref() == Some("com.apple.MobileSMS")
+        })
+        .unwrap_or(false);
+
+    if is_messages {
+        match MessagesDetector::get_active_contact() {
+            Ok(Some(contact_name)) => {
+                debug!(
+                    "Captured Messages contact at recording start: {}",
+                    contact_name
+                );
+                *handle.captured_contact.lock() = Some(contact_name);
+            }
+            Ok(None) => {
+                debug!("Messages active but no conversation detected at recording start");
+                *handle.captured_contact.lock() = None;
+            }
+            Err(e) => {
+                debug!(
+                    "Failed to capture Messages contact at recording start: {}",
+                    e
+                );
+                *handle.captured_contact.lock() = None;
+            }
+        }
+    } else {
+        *handle.captured_contact.lock() = None;
+    }
 
     let mut audio_lock = handle.audio.lock();
 
@@ -258,6 +372,24 @@ pub extern "C" fn flowwispr_is_recording(handle: *mut FlowWhisprHandle) -> bool 
     }
 }
 
+/// Get current audio level (RMS amplitude) from the recording
+/// Returns a value between 0.0 and 1.0, or 0.0 if not recording
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_audio_level(handle: *mut FlowWhisprHandle) -> f32 {
+    let handle = unsafe { &*handle };
+    let audio_lock = handle.audio.lock();
+
+    if let Some(ref capture) = *audio_lock {
+        if capture.state() == CaptureState::Recording {
+            capture.current_audio_level()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    }
+}
+
 // ============ Transcription ============
 
 fn transcribe_with_audio(
@@ -266,9 +398,44 @@ fn transcribe_with_audio(
     sample_rate: u32,
     app_name: Option<String>,
 ) -> crate::error::Result<String> {
+    // Determine writing mode - use contact captured at recording start for Messages
     let mode = if let Some(ref name) = app_name {
-        let mut modes = handle.modes.lock();
-        modes.get_mode_with_storage(name, &handle.storage)
+        // Check if this is Messages.app
+        if name.to_lowercase().contains("messages") || name == "com.apple.MobileSMS" {
+            // Use the contact that was captured when recording started
+            // This avoids race conditions where the window focus changes during recording
+            let captured = handle.captured_contact.lock().clone();
+
+            if let Some(contact_name) = captured {
+                debug!("Using captured Messages contact: {}", contact_name);
+
+                // Classify the contact
+                let input = ContactInput {
+                    name: contact_name.clone(),
+                    organization: String::new(),
+                };
+                let category = handle.contact_classifier.classify(&input);
+                let contact_mode = category.suggested_writing_mode();
+
+                debug!(
+                    "Contact '{}' classified as {:?}, using mode {:?}",
+                    contact_name, category, contact_mode
+                );
+
+                // Record the interaction
+                handle.contact_classifier.record_interaction(&contact_name);
+
+                contact_mode
+            } else {
+                debug!("No contact was captured at recording start, using app default");
+                let mut modes = handle.modes.lock();
+                modes.get_mode_with_storage(name, &handle.storage)
+            }
+        } else {
+            // Not Messages - use app-based mode
+            let mut modes = handle.modes.lock();
+            modes.get_mode_with_storage(name, &handle.storage)
+        }
     } else {
         WritingMode::Casual
     };
@@ -277,27 +444,56 @@ fn transcribe_with_audio(
     let completion_provider = Arc::clone(&handle.completion);
     let app_context = handle.app_tracker.current_app();
 
+    eprintln!("🎧 [RUST/TRANSCRIBE] Starting speech-to-text transcription");
     let transcription = handle.runtime.block_on(async {
         let request = TranscriptionRequest::new(audio_data, sample_rate);
         transcription_provider.transcribe(request).await
     })?;
+    eprintln!(
+        "✅ [RUST/TRANSCRIBE] Speech-to-text completed - Raw text: {} chars",
+        transcription.text.len()
+    );
 
-    let (text_with_shortcuts, _triggered) = handle.shortcuts.process(&transcription.text);
+    let (text_with_shortcuts, triggered) = handle.shortcuts.process(&transcription.text);
     let (text_with_corrections, _applied) = handle.learning.apply_corrections(&text_with_shortcuts);
 
+    eprintln!(
+        "🤖 [RUST/AI] Starting AI completion with mode: {:?}",
+        mode
+    );
     let completion_result = handle.runtime.block_on(async {
-        let completion_request = if let Some(name) = app_name.clone() {
+        let mut completion_request = if let Some(name) = app_name.clone() {
             CompletionRequest::new(text_with_corrections.clone(), mode).with_app_context(name)
         } else {
             CompletionRequest::new(text_with_corrections.clone(), mode)
         };
+
+        // If shortcuts were triggered, add strong instruction to preserve them
+        if !triggered.is_empty() {
+            let shortcuts_info: Vec<String> = triggered
+                .iter()
+                .map(|t| format!("\"{}\"", t.replacement))
+                .collect();
+            let preserve_instruction = format!(
+                "\n\n=== CRITICAL INSTRUCTION ===\nThe input text contains voice shortcut expansions that MUST be output exactly as written, word-for-word, with NO modifications, rewording, or style changes whatsoever.\n\nShortcut text to preserve EXACTLY: {}\n\nDo NOT paraphrase, rephrase, or alter these phrases in any way. Copy them verbatim into your output.\n=== END CRITICAL INSTRUCTION ===",
+                shortcuts_info.join(", ")
+            );
+            completion_request = completion_request.with_shortcut_preservation(preserve_instruction);
+        }
+
         completion_provider.complete(completion_request).await
     });
 
     let processed_text = match completion_result {
-        Ok(completion) => completion.text,
+        Ok(completion) => {
+            eprintln!(
+                "✅ [RUST/AI] AI completion succeeded - Output: {} chars",
+                completion.text.len()
+            );
+            completion.text
+        }
         Err(err) => {
-            error!("Completion failed, using corrected text: {}", err);
+            eprintln!("❌ [RUST/AI] Completion failed, using corrected text: {}", err);
             text_with_corrections.clone()
         }
     };
@@ -376,6 +572,9 @@ pub extern "C" fn flowwispr_transcribe(
     *handle.last_audio.lock() = Some(audio_data.clone());
     *handle.last_audio_sample_rate.lock() = Some(sample_rate);
     let result = transcribe_with_audio(handle, audio_data, sample_rate, app);
+
+    // Clear the captured contact after transcription (whether success or failure)
+    *handle.captured_contact.lock() = None;
 
     match result {
         Ok(text) => {
@@ -678,155 +877,6 @@ pub extern "C" fn flowwispr_is_configured(handle: *mut FlowWhisprHandle) -> bool
     handle.transcription.is_configured() && handle.completion.is_configured()
 }
 
-/// Set the OpenAI API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_OPENAI_API_KEY, &key) {
-        let message = format!("Failed to save OpenAI API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "openai")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // reinitialize providers with new key
-    handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key.clone())));
-    handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
-/// Set the Gemini API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_gemini_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_GEMINI_API_KEY, &key) {
-        let message = format!("Failed to save Gemini API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "gemini")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // reinitialize providers with new key
-    handle.transcription = Arc::new(GeminiTranscriptionProvider::new(Some(key.clone())));
-    handle.completion = Arc::new(GeminiCompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
-/// Set the OpenRouter API key
-#[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_set_openrouter_api_key(
-    handle: *mut FlowWhisprHandle,
-    api_key: *const c_char,
-) -> bool {
-    if api_key.is_null() {
-        return false;
-    }
-
-    let handle = unsafe { &mut *handle };
-
-    let key = match unsafe { CStr::from_ptr(api_key) }.to_str() {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            set_last_error(handle, "Invalid API key");
-            return false;
-        }
-    };
-
-    if key.is_empty() {
-        set_last_error(handle, "API key is empty");
-        return false;
-    }
-
-    if let Err(e) = handle.storage.set_setting(SETTING_OPENROUTER_API_KEY, &key) {
-        let message = format!("Failed to save OpenRouter API key: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_COMPLETION_PROVIDER, "openrouter")
-    {
-        let message = format!("Failed to save completion provider: {e}");
-        error!("{message}");
-        set_last_error(handle, message);
-        return false;
-    }
-
-    // OpenRouter only handles completion, keep transcription provider as-is
-    handle.completion = Arc::new(OpenRouterCompletionProvider::new(Some(key)));
-
-    clear_last_error(handle);
-    true
-}
-
 // ============ App Tracking ============
 
 /// Set the currently active app (call from Swift when app switches)
@@ -1005,6 +1055,7 @@ pub extern "C" fn flowwispr_get_recent_transcriptions_json(
             id: item.id.to_string(),
             status: item.status,
             text: item.text,
+            raw_text: item.raw_text,
             error: item.error,
             duration_ms: item.duration_ms,
             created_at: item.created_at.to_rfc3339(),
@@ -1042,7 +1093,81 @@ pub extern "C" fn flowwispr_get_last_error(handle: *mut FlowWhisprHandle) -> *mu
 
 // ============ Provider Configuration ============
 
-/// Set completion provider
+/// Switch completion provider (loads API key from database)
+/// provider: 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// Returns true if provider was switched successfully
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_switch_completion_provider(
+    handle: *mut FlowWhisprHandle,
+    provider: u8,
+) -> bool {
+    let handle = unsafe { &mut *handle };
+
+    let (setting_key, provider_name) = match provider {
+        0 => (SETTING_OPENAI_API_KEY, "openai"),
+        1 => (SETTING_GEMINI_API_KEY, "gemini"),
+        2 => (SETTING_OPENROUTER_API_KEY, "openrouter"),
+        _ => {
+            set_last_error(handle, "Invalid provider");
+            return false;
+        }
+    };
+
+    // Load the API key from the database
+    let api_key = match handle.storage.get_setting(setting_key) {
+        Ok(Some(key)) if !key.is_empty() => key,
+        Ok(Some(_)) | Ok(None) => {
+            let message = format!("No API key configured for {}", provider_name);
+            error!("{message}");
+            set_last_error(handle, message);
+            return false;
+        }
+        Err(e) => {
+            let message = format!("Failed to load API key for {}: {}", provider_name, e);
+            error!("{message}");
+            set_last_error(handle, message);
+            return false;
+        }
+    };
+
+    // Save the provider preference
+    if let Err(e) = handle
+        .storage
+        .set_setting(SETTING_COMPLETION_PROVIDER, provider_name)
+    {
+        let message = format!("Failed to save completion provider: {e}");
+        error!("{message}");
+        set_last_error(handle, message);
+        return false;
+    }
+
+    // Initialize the provider
+    match provider {
+        0 => {
+            handle.transcription =
+                Arc::new(OpenAITranscriptionProvider::new(Some(api_key.clone())));
+            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to OpenAI");
+        }
+        1 => {
+            handle.transcription =
+                Arc::new(GeminiTranscriptionProvider::new(Some(api_key.clone())));
+            handle.completion = Arc::new(GeminiCompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to Gemini");
+        }
+        2 => {
+            // OpenRouter only handles completion, keep existing transcription provider
+            handle.completion = Arc::new(OpenRouterCompletionProvider::new(Some(api_key)));
+            debug!("Switched completion provider to OpenRouter");
+        }
+        _ => unreachable!(),
+    }
+
+    clear_last_error(handle);
+    true
+}
+
+/// Set completion provider with API key (saves both)
 /// provider: 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
 /// api_key: The API key for the provider
 #[unsafe(no_mangle)]
@@ -1143,9 +1268,60 @@ pub extern "C" fn flowwispr_get_completion_provider(handle: *mut FlowWhisprHandl
     }
 }
 
+/// Helper function to mask an API key for display
+/// Shows the prefix (e.g., "sk-" or "AI") and masks the rest with dots
+fn mask_api_key(key: &str) -> String {
+    if key.is_empty() {
+        return String::new();
+    }
+
+    // For OpenAI keys (sk-...)
+    if key.starts_with("sk-") {
+        return format!("sk-••••••••");
+    }
+    // For Gemini keys (AI...)
+    if key.starts_with("AI") {
+        return format!("AI••••••••");
+    }
+    // For other keys, just show dots
+    "••••••••".to_string()
+}
+
+/// Get API key for a specific provider in masked form
+/// provider: 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// Returns null if no key is set, or a masked version like "sk-••••••••"
+/// Caller must free the returned string with flowwispr_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_api_key(
+    handle: *mut FlowWhisprHandle,
+    provider: u8,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    let setting_key = match provider {
+        0 => SETTING_OPENAI_API_KEY,
+        1 => SETTING_GEMINI_API_KEY,
+        2 => SETTING_OPENROUTER_API_KEY,
+        _ => return ptr::null_mut(),
+    };
+
+    match handle.storage.get_setting(setting_key) {
+        Ok(Some(key)) => {
+            let masked = mask_api_key(&key);
+            CString::new(masked).unwrap().into_raw()
+        }
+        _ => ptr::null_mut(),
+    }
+}
+
 /// Set transcription mode (local or remote)
 /// use_local: true for local Whisper, false for cloud provider
-/// whisper_model: 0 = Tiny, 1 = Base, 2 = Small (only used when use_local = true)
+/// whisper_model: Model selection (only used when use_local = true)
+///   0 = Turbo (~15MB) - quantized, ultra-fast, lowest memory
+///   1 = Fast (~39MB) - fast, lower accuracy
+///   2 = Balanced (~142MB) - good speed/accuracy balance
+///   3 = Quality (~400MB) - great accuracy, still fast [recommended]
+///   4 = Best (~750MB) - best quality available
 /// Returns true on success, false on failure
 #[unsafe(no_mangle)]
 pub extern "C" fn flowwispr_set_transcription_mode(
@@ -1156,10 +1332,10 @@ pub extern "C" fn flowwispr_set_transcription_mode(
     let handle = unsafe { &mut *handle };
 
     // Save setting to database
-    if let Err(e) = handle
-        .storage
-        .set_setting(SETTING_USE_LOCAL_TRANSCRIPTION, if use_local { "true" } else { "false" })
-    {
+    if let Err(e) = handle.storage.set_setting(
+        SETTING_USE_LOCAL_TRANSCRIPTION,
+        if use_local { "true" } else { "false" },
+    ) {
         let message = format!("Failed to save transcription mode: {}", e);
         error!("{}", message);
         set_last_error(handle, message);
@@ -1169,22 +1345,23 @@ pub extern "C" fn flowwispr_set_transcription_mode(
     if use_local {
         // Local Whisper transcription
         let model = match whisper_model {
-            0 => WhisperModel::Tiny,
-            1 => WhisperModel::Base,
-            2 => WhisperModel::Small,
+            0 => WhisperModel::Turbo,
+            1 => WhisperModel::Fast,
+            2 => WhisperModel::Balanced,
+            3 => WhisperModel::Quality,
+            4 => WhisperModel::Best,
             _ => {
-                set_last_error(handle, "Invalid Whisper model selection");
+                set_last_error(handle, "Invalid Whisper model selection (0-4)");
                 return false;
             }
         };
 
-        // Save model choice
-        let model_name = match model {
-            WhisperModel::Tiny => "tiny",
-            WhisperModel::Base => "base",
-            WhisperModel::Small => "small",
-        };
-        if let Err(e) = handle.storage.set_setting(SETTING_LOCAL_WHISPER_MODEL, model_name) {
+        // Save model choice using canonical name
+        let model_name = model.as_str();
+        if let Err(e) = handle
+            .storage
+            .set_setting(SETTING_LOCAL_WHISPER_MODEL, model_name)
+        {
             let message = format!("Failed to save Whisper model: {}", e);
             error!("{}", message);
             set_last_error(handle, message);
@@ -1202,14 +1379,34 @@ pub extern "C" fn flowwispr_set_transcription_mode(
             }
         };
 
+        // Check if model files already exist
+        let files_exist = check_model_files_exist(model, &models_dir);
+
+        // Set loading flag if this will require downloading
+        if !files_exist {
+            handle.is_model_loading.store(true, Ordering::SeqCst);
+            debug!(
+                "Model files not found, will download (~{}MB)",
+                model.size_mb()
+            );
+        }
+
         // Create provider
         let provider = Arc::new(LocalWhisperTranscriptionProvider::new(model, models_dir));
 
         // Trigger model download/load asynchronously
         let provider_clone = Arc::clone(&provider);
+        let loading_flag = Arc::clone(&handle.is_model_loading);
+        let should_clear_flag = !files_exist;
+
         handle.runtime.spawn(async move {
             if let Err(e) = provider_clone.load_model().await {
                 error!("Failed to load Whisper model: {}", e);
+            }
+            // Clear loading flag when done (only if we set it)
+            if should_clear_flag {
+                loading_flag.store(false, Ordering::SeqCst);
+                debug!("Model loading completed");
             }
         });
 
@@ -1248,16 +1445,104 @@ pub extern "C" fn flowwispr_set_transcription_mode(
     true
 }
 
+/// Get current transcription mode settings
+/// Returns use_local flag and whisper_model (0-4) via out parameters
+/// Returns false on database error, true on success
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_transcription_mode(
+    handle: *mut FlowWhisprHandle,
+    out_use_local: *mut bool,
+    out_whisper_model: *mut u8,
+) -> bool {
+    let handle = unsafe { &*handle };
+
+    // Read use_local setting from database
+    let use_local = match handle.storage.get_setting(SETTING_USE_LOCAL_TRANSCRIPTION) {
+        Ok(Some(value)) => value == "true",
+        Ok(None) => false, // Default to remote if not set
+        Err(e) => {
+            error!("Failed to read transcription mode: {}", e);
+            return false;
+        }
+    };
+
+    // Read whisper model setting from database
+    let whisper_model = if use_local {
+        match handle.storage.get_setting(SETTING_LOCAL_WHISPER_MODEL) {
+            Ok(Some(model_str)) => {
+                // Convert model name to enum
+                let model = WhisperModel::all()
+                    .iter()
+                    .find(|m| m.as_str() == model_str)
+                    .copied()
+                    .unwrap_or(WhisperModel::Balanced); // Default to Balanced
+
+                // Convert enum to u8
+                match model {
+                    WhisperModel::Turbo => 0,
+                    WhisperModel::Fast => 1,
+                    WhisperModel::Balanced => 2,
+                    WhisperModel::Quality => 3,
+                    WhisperModel::Best => 4,
+                }
+            }
+            Ok(None) => 1, // Default to Balanced
+            Err(e) => {
+                error!("Failed to read Whisper model: {}", e);
+                return false;
+            }
+        }
+    } else {
+        1 // Default value when using remote transcription
+    };
+
+    // Write to out parameters
+    unsafe {
+        *out_use_local = use_local;
+        *out_whisper_model = whisper_model;
+    }
+
+    true
+}
+
+/// Check if a Whisper model is currently being downloaded/initialized
+/// Returns true if model download/initialization is in progress
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_is_model_loading(handle: *mut FlowWhisprHandle) -> bool {
+    let handle = unsafe { &*handle };
+    handle.is_model_loading.load(Ordering::SeqCst)
+}
+
 /// Legacy function - prefer flowwispr_set_transcription_mode
-/// Enable local Whisper transcription with Metal acceleration
-/// model: 0 = Tiny, 1 = Base, 2 = Small
+/// Enable local Whisper transcription with Metal + Accelerate acceleration
+/// model: 0=Turbo, 1=Fast, 2=Balanced, 3=Quality, 4=Best
 /// Returns true on success, false on failure
 #[unsafe(no_mangle)]
-pub extern "C" fn flowwispr_enable_local_whisper(
-    handle: *mut FlowWhisprHandle,
-    model: u8,
-) -> bool {
+pub extern "C" fn flowwispr_enable_local_whisper(handle: *mut FlowWhisprHandle, model: u8) -> bool {
     flowwispr_set_transcription_mode(handle, true, model)
+}
+
+/// Get available Whisper models as JSON (caller must free with flowwispr_free_string)
+/// Returns JSON array with model info including id, name, description, size, and flags
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_whisper_models_json() -> *mut c_char {
+    let models: Vec<serde_json::Value> = WhisperModel::all()
+        .iter()
+        .enumerate()
+        .map(|(id, model)| {
+            serde_json::json!({
+                "id": id,
+                "name": model.as_str(),
+                "description": model.description(),
+                "size_mb": model.size_mb(),
+                "is_quantized": model.is_quantized(),
+                "is_distilled": model.is_distilled(),
+            })
+        })
+        .collect();
+
+    let json = serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string());
+    CString::new(json).unwrap().into_raw()
 }
 
 /// Get all shortcuts as JSON (caller must free with flowwispr_free_string)
@@ -1282,5 +1567,225 @@ pub extern "C" fn flowwispr_get_shortcuts_json(handle: *mut FlowWhisprHandle) ->
     match CString::new(serde_json::to_string(&shortcuts).unwrap_or_default()) {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => ptr::null_mut(),
+    }
+}
+
+// ============ Contact Categorization ============
+
+/// Get active contact name from Messages.app window
+/// Returns C string with contact name, or null if not available
+/// Caller must free with flowwispr_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_active_messages_contact(
+    handle: *mut FlowWhisprHandle,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    match MessagesDetector::get_active_contact() {
+        Ok(Some(name)) => match CString::new(name) {
+            Ok(cstr) => cstr.into_raw(),
+            Err(_) => {
+                set_last_error(handle, "Invalid UTF-8 in contact name");
+                ptr::null_mut()
+            }
+        },
+        Ok(None) => ptr::null_mut(),
+        Err(e) => {
+            set_last_error(handle, format!("Failed to get active contact: {}", e));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Classify a contact given name and organization
+/// Returns JSON string with category
+/// Caller must free with flowwispr_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_classify_contact(
+    handle: *mut FlowWhisprHandle,
+    name: *const c_char,
+    organization: *const c_char,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    let name_str = unsafe {
+        if name.is_null() {
+            set_last_error(handle, "Name cannot be null");
+            return ptr::null_mut();
+        }
+        match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error(handle, "Invalid UTF-8 in name");
+                return ptr::null_mut();
+            }
+        }
+    };
+
+    let org_str = unsafe {
+        if organization.is_null() {
+            String::new()
+        } else {
+            match CStr::from_ptr(organization).to_str() {
+                Ok(s) => s.to_string(),
+                Err(_) => String::new(),
+            }
+        }
+    };
+
+    let input = ContactInput {
+        name: name_str.to_string(),
+        organization: org_str,
+    };
+
+    let category = handle.contact_classifier.classify(&input);
+
+    let result = serde_json::json!({
+        "name": name_str,
+        "category": category,
+    });
+
+    match CString::new(result.to_string()) {
+        Ok(cstr) => cstr.into_raw(),
+        Err(_) => {
+            set_last_error(handle, "Failed to serialize result");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Classify multiple contacts from JSON array
+/// Input format: [{"name": "...", "organization": "..."}]
+/// Output format: {"ContactName": "category", ...}
+/// Caller must free with flowwispr_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_classify_contacts_batch(
+    handle: *mut FlowWhisprHandle,
+    contacts_json: *const c_char,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    let json_str = unsafe {
+        if contacts_json.is_null() {
+            set_last_error(handle, "JSON cannot be null");
+            return ptr::null_mut();
+        }
+        match CStr::from_ptr(contacts_json).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error(handle, "Invalid UTF-8 in JSON");
+                return ptr::null_mut();
+            }
+        }
+    };
+
+    let inputs: Vec<ContactInput> = match serde_json::from_str(json_str) {
+        Ok(i) => i,
+        Err(e) => {
+            set_last_error(handle, format!("Invalid JSON: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let result_json = handle.contact_classifier.classify_batch_json(&inputs);
+
+    match CString::new(result_json) {
+        Ok(cstr) => cstr.into_raw(),
+        Err(_) => {
+            set_last_error(handle, "Failed to create result string");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Record interaction with a contact (updates frequency)
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_record_contact_interaction(
+    handle: *mut FlowWhisprHandle,
+    name: *const c_char,
+) {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    let name_str = unsafe {
+        if name.is_null() {
+            return;
+        }
+        match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+
+    handle.contact_classifier.record_interaction(name_str);
+}
+
+/// Get frequent contacts as JSON array
+/// Returns: [{"name": "...", "category": "...", "frequency": N}, ...]
+/// Caller must free with flowwispr_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_frequent_contacts(
+    handle: *mut FlowWhisprHandle,
+    limit: u32,
+) -> *mut c_char {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    let contacts = handle
+        .contact_classifier
+        .get_frequent_contacts(limit as usize);
+
+    let result: Vec<serde_json::Value> = contacts
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "category": c.category,
+                "frequency": c.frequency,
+                "organization": c.organization,
+            })
+        })
+        .collect();
+
+    match CString::new(serde_json::to_string(&result).unwrap_or_default()) {
+        Ok(cstr) => cstr.into_raw(),
+        Err(_) => {
+            set_last_error(handle, "Failed to serialize contacts");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get suggested writing mode for a contact category
+/// Returns: 0=Formal, 1=Casual, 2=VeryCasual, 3=Excited
+#[unsafe(no_mangle)]
+pub extern "C" fn flowwispr_get_writing_mode_for_category(
+    handle: *mut FlowWhisprHandle,
+    category: u32,
+) -> u32 {
+    let handle = unsafe { &*handle };
+    clear_last_error(handle);
+
+    use crate::types::ContactCategory;
+
+    let contact_category = match category {
+        0 => ContactCategory::Professional,
+        1 => ContactCategory::CloseFamily,
+        2 => ContactCategory::CasualPeer,
+        3 => ContactCategory::Partner,
+        4 => ContactCategory::FormalNeutral,
+        _ => ContactCategory::FormalNeutral,
+    };
+
+    let writing_mode = contact_category.suggested_writing_mode();
+
+    match writing_mode {
+        WritingMode::Formal => 0,
+        WritingMode::Casual => 1,
+        WritingMode::VeryCasual => 2,
+        WritingMode::Excited => 3,
     }
 }

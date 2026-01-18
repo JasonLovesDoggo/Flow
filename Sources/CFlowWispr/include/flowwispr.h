@@ -9,6 +9,7 @@
 #ifndef FLOWWHISPR_H
 #define FLOWWHISPR_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -46,6 +47,11 @@ uint64_t flowwispr_stop_recording(FlowWhisprHandle* handle);
 /// @param handle Engine handle
 /// @return true if recording
 bool flowwispr_is_recording(FlowWhisprHandle* handle);
+
+/// Get current audio level (RMS amplitude) from the recording
+/// @param handle Engine handle
+/// @return Value between 0.0 and 1.0, or 0.0 if not recording
+float flowwispr_get_audio_level(FlowWhisprHandle* handle);
 
 // ============ Transcription ============
 
@@ -136,24 +142,6 @@ void flowwispr_free_string(char* s);
 /// @return true if configured
 bool flowwispr_is_configured(FlowWhisprHandle* handle);
 
-/// Set the OpenAI API key
-/// @param handle Engine handle
-/// @param api_key OpenAI API key
-/// @return true on success
-bool flowwispr_set_api_key(FlowWhisprHandle* handle, const char* api_key);
-
-/// Set the Gemini API key
-/// @param handle Engine handle
-/// @param api_key Gemini API key
-/// @return true on success
-bool flowwispr_set_gemini_api_key(FlowWhisprHandle* handle, const char* api_key);
-
-/// Set the OpenRouter API key
-/// @param handle Engine handle
-/// @param api_key OpenRouter API key
-/// @return true on success
-bool flowwispr_set_openrouter_api_key(FlowWhisprHandle* handle, const char* api_key);
-
 // ============ App Tracking ============
 
 /// Set the currently active app
@@ -207,7 +195,13 @@ char* flowwispr_get_shortcuts_json(FlowWhisprHandle* handle);
 
 // ============ Provider Configuration ============
 
-/// Set completion provider
+/// Switch completion provider (loads API key from database)
+/// @param handle Engine handle
+/// @param provider 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// @return true on success
+bool flowwispr_switch_completion_provider(FlowWhisprHandle* handle, uint8_t provider);
+
+/// Set completion provider with API key (saves both)
 /// @param handle Engine handle
 /// @param provider 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
 /// @param api_key API key for the provider
@@ -219,12 +213,30 @@ bool flowwispr_set_completion_provider(FlowWhisprHandle* handle, uint8_t provide
 /// @return 0 = OpenAI, 1 = Gemini, 2 = OpenRouter, 255 = Unknown
 uint8_t flowwispr_get_completion_provider(FlowWhisprHandle* handle);
 
+/// Get API key for a specific provider in masked form (e.g., "sk-••••••••")
+/// @param handle Engine handle
+/// @param provider 0 = OpenAI, 1 = Gemini, 2 = OpenRouter
+/// @return Masked API key string (caller must free with flowwispr_free_string) or NULL if not set
+char* flowwispr_get_api_key(FlowWhisprHandle* handle, uint8_t provider);
+
 /// Set transcription mode (local or remote)
 /// @param handle Engine handle
 /// @param use_local true for local Whisper, false for cloud provider
 /// @param whisper_model Whisper model: 0 = Tiny (39MB), 1 = Base (142MB), 2 = Small (466MB)
 /// @return true on success, false on failure
 bool flowwispr_set_transcription_mode(FlowWhisprHandle* handle, bool use_local, uint8_t whisper_model);
+
+/// Get current transcription mode settings
+/// @param handle Engine handle
+/// @param out_use_local Output parameter for use_local flag
+/// @param out_whisper_model Output parameter for whisper_model (0-4)
+/// @return true on success, false on database error
+bool flowwispr_get_transcription_mode(FlowWhisprHandle* handle, bool* out_use_local, uint8_t* out_whisper_model);
+
+/// Check if a Whisper model is currently being downloaded/initialized
+/// @param handle Engine handle
+/// @return true if model download/initialization is in progress
+bool flowwispr_is_model_loading(FlowWhisprHandle* handle);
 
 /// Legacy: Enable local Whisper transcription with Metal acceleration
 /// @param handle Engine handle

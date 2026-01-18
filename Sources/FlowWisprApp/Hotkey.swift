@@ -12,7 +12,60 @@ import Foundation
 struct Hotkey: Equatable {
     enum Kind: Equatable {
         case globe
+        case modifierOnly(ModifierKey)
         case custom(keyCode: Int, modifiers: Modifiers, keyLabel: String)
+    }
+
+    enum ModifierKey: String, Codable, CaseIterable {
+        case option
+        case shift
+        case control
+        case command
+
+        var cgFlag: CGEventFlags {
+            switch self {
+            case .option: return .maskAlternate
+            case .shift: return .maskShift
+            case .control: return .maskControl
+            case .command: return .maskCommand
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .option: return "⌥ Option"
+            case .shift: return "⇧ Shift"
+            case .control: return "⌃ Control"
+            case .command: return "⌘ Command"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .option: return "⌥"
+            case .shift: return "⇧"
+            case .control: return "⌃"
+            case .command: return "⌘"
+            }
+        }
+
+        static func from(cgFlags: CGEventFlags) -> ModifierKey? {
+            // Return the single modifier if exactly one is pressed
+            let modifiers: [(CGEventFlags, ModifierKey)] = [
+                (.maskAlternate, .option),
+                (.maskShift, .shift),
+                (.maskControl, .control),
+                (.maskCommand, .command)
+            ]
+            var found: ModifierKey?
+            for (flag, key) in modifiers {
+                if cgFlags.contains(flag) {
+                    if found != nil { return nil } // Multiple modifiers pressed
+                    found = key
+                }
+            }
+            return found
+        }
     }
 
     struct Modifiers: OptionSet, Equatable {
@@ -29,6 +82,7 @@ struct Hotkey: Equatable {
         var keyCode: Int?
         var modifiers: Int?
         var keyLabel: String?
+        var modifierKey: String?
     }
 
     static let storageKey = "recordHotkey"
@@ -40,6 +94,8 @@ struct Hotkey: Equatable {
         switch kind {
         case .globe:
             return "Fn key"
+        case .modifierOnly(let modifier):
+            return modifier.displayName
         case .custom(_, let modifiers, let keyLabel):
             return "\(modifiers.displayString)\(keyLabel)"
         }
@@ -75,7 +131,9 @@ struct Hotkey: Equatable {
     private func toStored() -> StoredHotkey {
         switch kind {
         case .globe:
-            return StoredHotkey(kind: "globe", keyCode: nil, modifiers: nil, keyLabel: nil)
+            return StoredHotkey(kind: "globe")
+        case .modifierOnly(let modifier):
+            return StoredHotkey(kind: "modifierOnly", modifierKey: modifier.rawValue)
         case .custom(let keyCode, let modifiers, let keyLabel):
             return StoredHotkey(
                 kind: "custom",
@@ -87,18 +145,27 @@ struct Hotkey: Equatable {
     }
 
     private static func fromStored(_ stored: StoredHotkey) -> Hotkey {
-        if stored.kind == "custom",
-           let keyCode = stored.keyCode,
-           let modifiersRaw = stored.modifiers,
-           let keyLabel = stored.keyLabel,
-           !keyLabel.isEmpty {
-            return Hotkey(
-                kind: .custom(
-                    keyCode: keyCode,
-                    modifiers: Modifiers(rawValue: modifiersRaw),
-                    keyLabel: keyLabel
+        switch stored.kind {
+        case "modifierOnly":
+            if let modifierKeyRaw = stored.modifierKey,
+               let modifier = ModifierKey(rawValue: modifierKeyRaw) {
+                return Hotkey(kind: .modifierOnly(modifier))
+            }
+        case "custom":
+            if let keyCode = stored.keyCode,
+               let modifiersRaw = stored.modifiers,
+               let keyLabel = stored.keyLabel,
+               !keyLabel.isEmpty {
+                return Hotkey(
+                    kind: .custom(
+                        keyCode: keyCode,
+                        modifiers: Modifiers(rawValue: modifiersRaw),
+                        keyLabel: keyLabel
+                    )
                 )
-            )
+            }
+        default:
+            break
         }
 
         return defaultHotkey

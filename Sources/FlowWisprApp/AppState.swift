@@ -20,6 +20,9 @@ final class AppState: ObservableObject {
     /// Current recording state
     @Published var isRecording = false
     @Published var isProcessing = false
+    @Published var isInitializingModel = false
+    @Published var audioLevel: Float = 0.0
+    @Published var smoothedAudioLevel: Float = 0.0
 
     /// Last transcribed text
     @Published var lastTranscription: String?
@@ -27,11 +30,17 @@ final class AppState: ObservableObject {
     /// Current writing mode
     @Published var currentMode: WritingMode = .casual
 
-    /// Current app name
+    /// Current app name (tracks frontmost app, including FlowWispr itself)
     @Published var currentApp: String = "Unknown"
 
     /// Current app category
     @Published var currentCategory: AppCategory = .unknown
+
+    /// Target app for mode configuration (the app before FlowWispr became active)
+    @Published var targetAppName: String = "Unknown"
+    @Published var targetAppBundleId: String?
+    @Published var targetAppMode: WritingMode = .casual
+    @Published var targetAppCategory: AppCategory = .unknown
 
     /// Recent transcriptions
     @Published var history: [TranscriptionSummary] = []
@@ -58,8 +67,12 @@ final class AppState: ObservableObject {
     /// Workspace observer for app changes
     private var workspaceObserver: NSObjectProtocol?
     private var recordingTimer: Timer?
+    private var audioLevelTimer: Timer?
+    private var modelLoadingTimer: Timer?
     private var globeKeyHandler: GlobeKeyHandler?
     private var hotkeyCaptureMonitor: Any?
+    private var hotkeyFlagsMonitor: Any?
+    private var pendingModifierCapture: Hotkey.ModifierKey?
     private var appActiveObserver: NSObjectProtocol?
     private var appInactiveObserver: NSObjectProtocol?
     private var mediaPauseState = MediaPauseState()
@@ -78,6 +91,7 @@ final class AppState: ObservableObject {
         setupGlobeKey()
         setupLifecycleObserver()
         setupWorkspaceObserver()
+        setupModelLoadingPoller()
         updateCurrentApp()
         refreshHistory()
     }
@@ -97,6 +111,10 @@ final class AppState: ObservableObject {
         }
         recordingTimer?.invalidate()
         recordingTimer = nil
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
+        modelLoadingTimer?.invalidate()
+        modelLoadingTimer = nil
         endHotkeyCapture()
         recordingIndicator?.hide()
     }
@@ -112,6 +130,7 @@ final class AppState: ObservableObject {
     }
 
     private func handleHotkeyTrigger(_ trigger: GlobeKeyHandler.Trigger) {
+        print("🎹 [HOTKEY] Trigger detected: \(trigger)")
         switch trigger {
         case .pressed:
             if !isRecording {
@@ -148,6 +167,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func setupModelLoadingPoller() {
+        // Poll model loading state every 0.5 seconds
+        modelLoadingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let isLoading = self.engine.isModelLoading()
+                if self.isInitializingModel != isLoading {
+                    self.isInitializingModel = isLoading
+                    self.updateRecordingIndicatorVisibility()
+                }
+            }
+        }
+    }
+
     func setHotkey(_ hotkey: Hotkey) {
         self.hotkey = hotkey
         hotkey.save()
@@ -160,6 +193,9 @@ final class AppState: ObservableObject {
         switch hotkey.kind {
         case .globe:
             properties["type"] = "globe"
+        case .modifierOnly(let modifier):
+            properties["type"] = "modifierOnly"
+            properties["modifier"] = modifier.rawValue
         case .custom(let keyCode, let modifiers, let keyLabel):
             properties["type"] = "custom"
             properties["key_code"] = keyCode
@@ -217,14 +253,24 @@ final class AppState: ObservableObject {
     }
 
     func beginHotkeyCapture() {
-        guard hotkeyCaptureMonitor == nil else { return }
+        guard hotkeyCaptureMonitor == nil, hotkeyFlagsMonitor == nil else { return }
         isCapturingHotkey = true
+        pendingModifierCapture = nil
 
+        // Monitor for key+modifier combos
         hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             Task { @MainActor [weak self] in
-                self?.handleHotkeyCapture(event)
+                self?.handleHotkeyKeyCapture(event)
             }
             return nil
+        }
+
+        // Monitor for modifier-only hotkeys
+        hotkeyFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { event in
+            Task { @MainActor [weak self] in
+                self?.handleHotkeyFlagsCapture(event)
+            }
+            return event
         }
     }
 
@@ -233,10 +279,17 @@ final class AppState: ObservableObject {
             NSEvent.removeMonitor(monitor)
             hotkeyCaptureMonitor = nil
         }
+        if let monitor = hotkeyFlagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            hotkeyFlagsMonitor = nil
+        }
         isCapturingHotkey = false
+        pendingModifierCapture = nil
     }
 
-    private func handleHotkeyCapture(_ event: NSEvent) {
+    private func handleHotkeyKeyCapture(_ event: NSEvent) {
+        pendingModifierCapture = nil // Key pressed, cancel any pending modifier capture
+
         let modifiers = Hotkey.Modifiers.from(nsFlags: event.modifierFlags)
         if event.keyCode == UInt16(kVK_Escape), modifiers.isEmpty {
             endHotkeyCapture()
@@ -245,6 +298,41 @@ final class AppState: ObservableObject {
 
         setHotkey(Hotkey.from(event: event))
         endHotkeyCapture()
+    }
+
+    private func handleHotkeyFlagsCapture(_ event: NSEvent) {
+        // Detect single modifier press/release for modifier-only hotkeys
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        // Map NSEvent flags to our ModifierKey
+        let modifierMappings: [(NSEvent.ModifierFlags, Hotkey.ModifierKey)] = [
+            (.option, .option),
+            (.shift, .shift),
+            (.control, .control),
+            (.command, .command)
+        ]
+
+        // Count how many modifiers are currently pressed
+        var pressedModifier: Hotkey.ModifierKey?
+        var count = 0
+        for (flag, key) in modifierMappings {
+            if flags.contains(flag) {
+                pressedModifier = key
+                count += 1
+            }
+        }
+
+        if count == 1, let modifier = pressedModifier {
+            // Single modifier pressed, start pending capture
+            pendingModifierCapture = modifier
+        } else if count == 0, let pending = pendingModifierCapture {
+            // All modifiers released, if we had a pending single modifier, capture it
+            setHotkey(Hotkey(kind: .modifierOnly(pending)))
+            endHotkeyCapture()
+        } else {
+            // Multiple modifiers or no modifiers, cancel pending
+            pendingModifierCapture = nil
+        }
     }
 
     // MARK: - Workspace Observer
@@ -269,13 +357,31 @@ final class AppState: ObservableObject {
 
     private func handleAppActivation(appName: String, bundleId: String?) {
         currentApp = appName
-        let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
-        currentCategory = engine.currentAppCategory
 
-        if let styleSuggestion = engine.styleSuggestion {
-            currentMode = styleSuggestion
+        // Check if FlowWispr itself became active
+        let isFlowWispr = bundleId == Bundle.main.bundleIdentifier
+
+        if !isFlowWispr {
+            // This is an external app - save it as the target for mode configuration
+            targetAppName = appName
+            targetAppBundleId = bundleId
+
+            let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
+            currentCategory = engine.currentAppCategory
+            targetAppCategory = currentCategory
+
+            if let styleSuggestion = engine.styleSuggestion {
+                currentMode = styleSuggestion
+                targetAppMode = styleSuggestion
+            } else {
+                currentMode = suggestedMode
+                targetAppMode = suggestedMode
+            }
         } else {
-            currentMode = suggestedMode
+            // FlowWispr became active - preserve the target app for mode changes
+            // Update currentMode to reflect the target app's mode
+            currentMode = targetAppMode
+            currentCategory = targetAppCategory
         }
     }
 
@@ -285,9 +391,22 @@ final class AppState: ObservableObject {
             let bundleId = frontApp.bundleIdentifier
 
             currentApp = appName
+
+            // Initialize target app if this is not FlowWispr
+            let isFlowWispr = bundleId == Bundle.main.bundleIdentifier
+            if !isFlowWispr {
+                targetAppName = appName
+                targetAppBundleId = bundleId
+            }
+
             let suggestedMode = engine.setActiveApp(name: appName, bundleId: bundleId)
             currentCategory = engine.currentAppCategory
             currentMode = suggestedMode
+
+            if !isFlowWispr {
+                targetAppMode = suggestedMode
+                targetAppCategory = currentCategory
+            }
         }
     }
 
@@ -308,12 +427,14 @@ final class AppState: ObservableObject {
         }
 
         targetApplication = NSWorkspace.shared.frontmostApplication
+        print("🎤 [RECORDING] Starting recording - App: \(currentApp), Mode: \(currentMode.displayName)")
         pauseMediaPlayback()
         if engine.startRecording() {
             isRecording = true
             isProcessing = false
             updateRecordingIndicatorVisibility()
             recordingDuration = 0
+            print("✅ [RECORDING] Recording started successfully")
 
             Analytics.shared.track("Recording Started", eventProperties: [
                 "app_name": currentApp,
@@ -327,6 +448,18 @@ final class AppState: ObservableObject {
                     self.recordingDuration += 100
                 }
             }
+
+            audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 1/30, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRecording else { return }
+                    let newLevel = self.engine.audioLevel
+                    self.audioLevel = newLevel
+                    // Smooth the audio level with exponential moving average
+                    // Higher smoothing factor = smoother but slower response
+                    let smoothingFactor: Float = 0.3
+                    self.smoothedAudioLevel = self.smoothedAudioLevel * (1 - smoothingFactor) + newLevel * smoothingFactor
+                }
+            }
         } else {
             errorMessage = engine.lastError ?? "Failed to start recording"
             resumeMediaPlayback()
@@ -334,14 +467,19 @@ final class AppState: ObservableObject {
     }
 
     func stopRecording() {
+        print("⏹️ [RECORDING] Stopping recording - Duration: \(recordingDuration)ms")
         recordingTimer?.invalidate()
         recordingTimer = nil
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
+        audioLevel = 0.0
 
         let duration = engine.stopRecording()
         isRecording = false
         resumeMediaPlayback()
 
         if duration > 0 {
+            print("✅ [RECORDING] Recording stopped successfully - Duration: \(duration)ms")
             Analytics.shared.track("Recording Stopped", eventProperties: [
                 "duration_ms": recordingDuration,
                 "app_name": currentApp
@@ -349,6 +487,7 @@ final class AppState: ObservableObject {
             setProcessing(true)
             transcribe()
         } else {
+            print("⚠️ [RECORDING] Recording cancelled (too short)")
             Analytics.shared.track("Recording Cancelled", eventProperties: [
                 "duration_ms": recordingDuration,
                 "app_name": currentApp
@@ -358,41 +497,57 @@ final class AppState: ObservableObject {
     }
 
     private func transcribe() {
-        Task {
-            let result = engine.transcribe(appName: currentApp)
-            await MainActor.run {
+        let appName = currentApp
+        let appCategory = currentCategory
+        let mode = currentMode
+        let duration = recordingDuration
+
+        print("🔄 [TRANSCRIBE] Starting transcription - App: \(appName), Mode: \(mode.displayName)")
+
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let result = await Task {
+                self.engine.transcribe(appName: appName)
+            }.value
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 if let text = result {
-                    lastTranscription = text
-                    errorMessage = nil
+                    print("✅ [TRANSCRIBE] Transcription completed - Length: \(text.count) chars")
+                    print("📝 [TRANSCRIBE] Result: \(text.prefix(100))...")
+                    self.lastTranscription = text
+                    self.errorMessage = nil
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
+                    print("📋 [CLIPBOARD] Text copied to clipboard")
 
                     Analytics.shared.track("Transcription Completed", eventProperties: [
-                        "app_name": currentApp,
-                        "app_category": currentCategory.rawValue,
-                        "writing_mode": currentMode.rawValue,
-                        "duration_ms": recordingDuration,
+                        "app_name": appName,
+                        "app_category": appCategory.rawValue,
+                        "writing_mode": mode.rawValue,
+                        "duration_ms": duration,
                         "text_length": text.count
                     ])
 
-                    activateTargetAppIfNeeded()
+                    self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
                         self?.finishProcessing()
                     }
-                    refreshHistory()
+                    self.refreshHistory()
                 } else {
-                    let errorMsg = engine.lastError ?? "Transcription failed"
-                    errorMessage = errorMsg
+                    let errorMsg = self.engine.lastError ?? "Transcription failed"
+                    print("❌ [TRANSCRIBE] Transcription failed: \(errorMsg)")
+                    self.errorMessage = errorMsg
 
                     Analytics.shared.track("Transcription Failed", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "error": errorMsg,
-                        "duration_ms": recordingDuration
+                        "duration_ms": duration
                     ])
 
-                    refreshHistory()
-                    finishProcessing()
+                    self.refreshHistory()
+                    self.finishProcessing()
                 }
             }
         }
@@ -400,47 +555,55 @@ final class AppState: ObservableObject {
 
     func retryLastTranscription() {
         setProcessing(true)
+        let appName = currentApp
+
         Analytics.shared.track("Transcription Retry Attempted", eventProperties: [
-            "app_name": currentApp
+            "app_name": appName
         ])
 
-        Task {
-            let result = engine.retryLastTranscription(appName: currentApp)
-            await MainActor.run {
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let result = await Task {
+                self.engine.retryLastTranscription(appName: appName)
+            }.value
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 if let text = result {
-                    lastTranscription = text
-                    errorMessage = nil
+                    self.lastTranscription = text
+                    self.errorMessage = nil
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
 
                     Analytics.shared.track("Transcription Retry Succeeded", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "text_length": text.count
                     ])
 
-                    activateTargetAppIfNeeded()
+                    self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
                         self?.finishProcessing()
                     }
-                    refreshHistory()
+                    self.refreshHistory()
                 } else {
-                    let errorMsg = engine.lastError ?? "Retry failed"
-                    errorMessage = errorMsg
+                    let errorMsg = self.engine.lastError ?? "Retry failed"
+                    self.errorMessage = errorMsg
 
                     Analytics.shared.track("Transcription Retry Failed", eventProperties: [
-                        "app_name": currentApp,
+                        "app_name": appName,
                         "error": errorMsg
                     ])
 
-                    refreshHistory()
-                    finishProcessing()
+                    self.refreshHistory()
+                    self.finishProcessing()
                 }
             }
         }
     }
 
     private func pasteText() {
+        print("📌 [PASTE] Sending paste command (Cmd+V) to app: \(targetApplication?.localizedName ?? "Unknown")")
         let source = CGEventSource(stateID: .hidSystemState)
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
@@ -450,6 +613,7 @@ final class AppState: ObservableObject {
 
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+        print("✅ [PASTE] Paste command sent successfully")
 
         Analytics.shared.track("Text Pasted", eventProperties: [
             "target_app": targetApplication?.localizedName ?? "Unknown",
@@ -485,7 +649,7 @@ final class AppState: ObservableObject {
     }
 
     private func updateRecordingIndicatorVisibility() {
-        if isRecording || isProcessing {
+        if isRecording || isProcessing || isInitializingModel {
             ensureRecordingIndicator()
             recordingIndicator?.show()
         } else {
@@ -495,50 +659,29 @@ final class AppState: ObservableObject {
 
     // MARK: - Settings
 
-    func setApiKey(_ key: String) {
+    func setApiKey(_ key: String, for provider: CompletionProvider) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setApiKey(trimmed) {
-            // Also switch to OpenAI provider
-            _ = engine.setCompletionProvider(.openAI, apiKey: trimmed)
+        if engine.setCompletionProvider(provider, apiKey: trimmed) {
             isConfigured = engine.isConfigured
             errorMessage = nil
-            Analytics.shared.track("API Key Set")
+            Analytics.shared.track("\(provider.displayName) API Key Set")
         } else {
             isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set API key"
+            errorMessage = engine.lastError ?? "Failed to set \(provider.displayName) API key"
         }
     }
 
-    func setGeminiApiKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setGeminiApiKey(trimmed) {
-            // Also switch to Gemini provider
-            _ = engine.setCompletionProvider(.gemini, apiKey: trimmed)
-            isConfigured = engine.isConfigured
-            errorMessage = nil
-            Analytics.shared.track("Gemini API Key Set")
+    func setProvider(_ provider: CompletionProvider, apiKey: String? = nil) {
+        let success: Bool
+        if let key = apiKey, !key.isEmpty {
+            // Save API key and switch provider
+            success = engine.setCompletionProvider(provider, apiKey: key)
         } else {
-            isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set Gemini API key"
+            // Just switch provider using saved key
+            success = engine.switchCompletionProvider(provider)
         }
-    }
 
-    func setOpenRouterApiKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if engine.setOpenRouterApiKey(trimmed) {
-            // Also switch to OpenRouter provider
-            _ = engine.setCompletionProvider(.openRouter, apiKey: trimmed)
-            isConfigured = engine.isConfigured
-            errorMessage = nil
-            Analytics.shared.track("OpenRouter API Key Set")
-        } else {
-            isConfigured = engine.isConfigured
-            errorMessage = engine.lastError ?? "Failed to set OpenRouter API key"
-        }
-    }
-
-    func setProvider(_ provider: CompletionProvider, apiKey: String) {
-        if engine.setCompletionProvider(provider, apiKey: apiKey) {
+        if success {
             isConfigured = engine.isConfigured
             errorMessage = nil
             Analytics.shared.track("Provider Changed", eventProperties: ["provider": provider.displayName])
@@ -549,12 +692,14 @@ final class AppState: ObservableObject {
     }
 
     func setMode(_ mode: WritingMode) {
-        if engine.setMode(mode, for: currentApp) {
+        // Always set the mode for the target app (not FlowWispr itself)
+        if engine.setMode(mode, for: targetAppName) {
             currentMode = mode
+            targetAppMode = mode
             Analytics.shared.track("Writing Mode Changed", eventProperties: [
                 "mode": mode.rawValue,
-                "app_name": currentApp,
-                "app_category": currentCategory.rawValue
+                "app_name": targetAppName,
+                "app_category": targetAppCategory.rawValue
             ])
         }
     }

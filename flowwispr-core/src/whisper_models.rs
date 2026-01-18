@@ -5,9 +5,8 @@ use std::path::PathBuf;
 
 /// Get default model directory (~/Library/Application Support/FlowWispr/models)
 pub fn get_models_dir() -> Result<PathBuf> {
-    let app_support = dirs::data_local_dir().ok_or_else(|| {
-        Error::Config("Failed to get application support directory".to_string())
-    })?;
+    let app_support = dirs::data_local_dir()
+        .ok_or_else(|| Error::Config("Failed to get application support directory".to_string()))?;
 
     let models_dir = app_support.join("FlowWispr").join("models");
 

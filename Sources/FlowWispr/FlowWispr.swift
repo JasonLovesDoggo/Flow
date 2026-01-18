@@ -76,25 +76,32 @@ public enum CompletionProvider: UInt8, Sendable {
 
 /// Whisper model sizes for local transcription
 public enum WhisperModel: UInt8, Sendable {
-    case tiny = 0
-    case base = 1
-    case small = 2
+    case turbo = 0     // Quantized tiny (~15MB) - blazing fast
+    case fast = 1      // Tiny (~39MB)
+    case balanced = 2  // Base (~142MB)
+    case quality = 3   // Distil-medium (~400MB) - recommended
+    case best = 4      // Distil-large-v3 (~750MB)
 
     public var displayName: String {
         switch self {
-        case .tiny: return "Tiny (39MB)"
-        case .base: return "Base (142MB)"
-        case .small: return "Small (466MB)"
+        case .turbo: return "Turbo"
+        case .fast: return "Fast"
+        case .balanced: return "Balanced"
+        case .quality: return "Quality"
+        case .best: return "Best"
         }
     }
 
     public var sizeDescription: String {
         switch self {
-        case .tiny: return "Fastest, least accurate"
-        case .base: return "Good balance"
-        case .small: return "Better accuracy"
+        case .turbo: return "~15MB, quantized, blazing fast"
+        case .fast: return "~39MB, good speed"
+        case .balanced: return "~142MB, balanced"
+        case .quality: return "~400MB, recommended"
+        case .best: return "~750MB, highest accuracy"
         }
     }
+
 }
 
 /// Transcription mode: local or remote
@@ -117,14 +124,20 @@ public final class FlowWispr: @unchecked Sendable {
     /// Initialize the FlowWispr engine
     /// - Parameter dbPath: Optional path to the SQLite database. If nil, uses default location.
     public init(dbPath: String? = nil) {
-        if let path = dbPath {
-            handle = path.withCString { cPath in
-                flowwispr_init(cPath)
-            }
-        } else {
-            handle = flowwispr_init(nil)
-        }
+        let path = dbPath ?? {
+            let fm = FileManager.default
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let flowDir = appSupport.appendingPathComponent("flowwispr")
 
+            // Create directory if needed
+            try? fm.createDirectory(at: flowDir, withIntermediateDirectories: true)
+
+            return flowDir.appendingPathComponent("flowwispr.db").path
+        }()
+
+        handle = path.withCString { cPath in
+            flowwispr_init(cPath)
+        }
     }
 
     deinit {
@@ -136,6 +149,14 @@ public final class FlowWispr: @unchecked Sendable {
     /// Check if the engine is properly initialized
     public var isInitialized: Bool {
         handle != nil
+    }
+
+    // MARK: - Configuration
+
+    /// Check if the transcription provider is configured
+    public var isConfigured: Bool {
+        guard let handle = handle else { return false }
+        return flowwispr_is_configured(handle)
     }
 
     // MARK: - Audio
@@ -158,6 +179,13 @@ public final class FlowWispr: @unchecked Sendable {
     public var isRecording: Bool {
         guard let handle = handle else { return false }
         return flowwispr_is_recording(handle)
+    }
+
+    /// Get current audio level (RMS amplitude) from the recording
+    /// - Returns: A value between 0.0 and 1.0, or 0.0 if not recording
+    public var audioLevel: Float {
+        guard let handle = handle else { return 0.0 }
+        return flowwispr_get_audio_level(handle)
     }
 
     // MARK: - Transcription
@@ -295,53 +323,6 @@ public final class FlowWispr: @unchecked Sendable {
     public var transcriptionCount: UInt64 {
         guard let handle = handle else { return 0 }
         return flowwispr_transcription_count(handle)
-    }
-
-    // MARK: - Configuration
-
-    /// Check if the transcription provider is configured
-    public var isConfigured: Bool {
-        guard let handle = handle else { return false }
-        return flowwispr_is_configured(handle)
-    }
-
-    /// Set the OpenAI API key
-    /// - Parameter apiKey: The OpenAI API key
-    /// - Returns: true on success
-    public func setApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_api_key(handle, cKey)
-        }
-
-        return isSet
-    }
-
-    /// Set the Gemini API key
-    /// - Parameter apiKey: The Gemini API key
-    /// - Returns: true on success
-    public func setGeminiApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_gemini_api_key(handle, cKey)
-        }
-
-        return isSet
-    }
-
-    /// Set the OpenRouter API key
-    /// - Parameter apiKey: The OpenRouter API key
-    /// - Returns: true on success
-    public func setOpenRouterApiKey(_ apiKey: String) -> Bool {
-        guard let handle = handle else { return false }
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSet = trimmedKey.withCString { cKey in
-            flowwispr_set_openrouter_api_key(handle, cKey)
-        }
-
-        return isSet
     }
 
     // MARK: - App Tracking
@@ -493,7 +474,15 @@ public final class FlowWispr: @unchecked Sendable {
 
     // MARK: - Provider Configuration
 
-    /// Set the completion provider
+    /// Switch the completion provider (loads API key from database)
+    /// - Parameter provider: The provider to use
+    /// - Returns: true on success
+    public func switchCompletionProvider(_ provider: CompletionProvider) -> Bool {
+        guard let handle = handle else { return false }
+        return flowwispr_switch_completion_provider(handle, provider.rawValue)
+    }
+
+    /// Set the completion provider with API key (saves both)
     /// - Parameters:
     ///   - provider: The provider to use
     ///   - apiKey: The API key for the provider
@@ -513,6 +502,35 @@ public final class FlowWispr: @unchecked Sendable {
         guard let handle = handle else { return nil }
         let rawValue = flowwispr_get_completion_provider(handle)
         return CompletionProvider(rawValue: rawValue)
+    }
+
+    /// Get API key for a specific provider in masked form
+    /// - Parameter provider: The provider to get the key for
+    /// - Returns: Masked API key (e.g., "sk-••••••••") or nil if not set
+    public func getMaskedApiKey(for provider: CompletionProvider) -> String? {
+        guard let handle = handle else { return nil }
+        guard let cString = flowwispr_get_api_key(handle, provider.rawValue) else { return nil }
+        let string = String(cString: cString)
+        flowwispr_free_string(cString)
+        return string
+    }
+
+    /// Get the OpenAI API key in masked form (e.g., "sk-••••••••")
+    /// - Returns: Masked API key or nil if not set
+    public var maskedOpenAIKey: String? {
+        getMaskedApiKey(for: .openAI)
+    }
+
+    /// Get the Gemini API key in masked form (e.g., "AI••••••••")
+    /// - Returns: Masked API key or nil if not set
+    public var maskedGeminiKey: String? {
+        getMaskedApiKey(for: .gemini)
+    }
+
+    /// Get the OpenRouter API key in masked form
+    /// - Returns: Masked API key or nil if not set
+    public var maskedOpenRouterKey: String? {
+        getMaskedApiKey(for: .openRouter)
     }
 
     /// Set transcription mode (local or remote)
@@ -535,6 +553,33 @@ public final class FlowWispr: @unchecked Sendable {
     @available(*, deprecated, message: "Use setTranscriptionMode(.local(model:)) instead")
     public func enableLocalWhisper(_ model: WhisperModel) -> Bool {
         return setTranscriptionMode(.local(model: model))
+    }
+
+    /// Get current transcription mode settings from database
+    /// - Returns: TranscriptionMode (local with model or remote), or nil on error
+    public func getTranscriptionMode() -> TranscriptionMode? {
+        guard let handle = handle else { return nil }
+
+        var useLocal: Bool = false
+        var whisperModel: UInt8 = 3 // default to quality
+
+        guard flowwispr_get_transcription_mode(handle, &useLocal, &whisperModel) else {
+            return nil
+        }
+
+        if useLocal {
+            let model = WhisperModel(rawValue: whisperModel) ?? .quality
+            return .local(model: model)
+        } else {
+            return .remote
+        }
+    }
+
+    /// Check if a Whisper model is currently being downloaded/initialized
+    /// - Returns: true if model download is in progress
+    public func isModelLoading() -> Bool {
+        guard let handle = handle else { return false }
+        return flowwispr_is_model_loading(handle)
     }
 
     // Configuration persistence is handled in the core database.

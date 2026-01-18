@@ -16,6 +16,9 @@ pub type CorrectionId = Uuid;
 /// Unique identifier for events
 pub type EventId = Uuid;
 
+/// Unique identifier for contacts
+pub type ContactId = Uuid;
+
 /// Audio data as raw bytes (16-bit PCM)
 pub type AudioData = Vec<u8>;
 
@@ -39,16 +42,16 @@ impl WritingMode {
     pub fn prompt_modifier(&self) -> &'static str {
         match self {
             Self::Formal => {
-                "Format the text formally with proper capitalization, punctuation, and professional language. Use complete sentences."
+                "Rewrite the message in a formal, professional tone. Replace casual phrases like \"gonna\", \"wanna\", \"5 min\" with proper equivalents like \"going to\", \"want to\", \"five minutes\". Use complete sentences, proper grammar, and polished language suitable for a work colleague or boss. Transform slang into professional alternatives."
             }
             Self::Casual => {
-                "Format the text casually with sentence case and punctuation. Keep it conversational but clear."
+                "Rewrite the message in a friendly, conversational tone. Keep contractions, use natural language, but ensure it's clear and warm. Suitable for family members. Add a friendly touch if appropriate."
             }
             Self::VeryCasual => {
-                "Format the text very casually. Use lowercase, minimal punctuation. Keep it brief and informal like a text message."
+                "Rewrite the message in a very casual, texting style. Use lowercase, abbreviations like \"gonna\", \"rn\", \"sry\". Keep it brief and informal like a text to a close friend. Skip formalities."
             }
             Self::Excited => {
-                "Format the text with enthusiasm! Use exclamation marks, emphasis, and energetic language!"
+                "Rewrite the message with enthusiasm and warmth! Add exclamation marks, express affection. Make it sound loving and excited, like texting a partner you adore!"
             }
         }
     }
@@ -392,4 +395,80 @@ pub enum EventType {
     ModeChanged,
     AppSwitched,
     SettingsUpdated,
+}
+
+/// Contact social relationship category for context-aware writing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactCategory {
+    /// Work colleague, professional contact
+    Professional,
+    /// Parent, child, sibling, close family member
+    CloseFamily,
+    /// Friend, peer, casual acquaintance
+    CasualPeer,
+    /// Romantic partner, spouse
+    Partner,
+    /// Default for unknown or neutral contacts
+    FormalNeutral,
+}
+
+impl ContactCategory {
+    /// Map contact category to suggested writing mode
+    pub fn suggested_writing_mode(&self) -> WritingMode {
+        match self {
+            Self::Professional => WritingMode::Formal,
+            Self::CloseFamily => WritingMode::Casual,
+            Self::CasualPeer => WritingMode::VeryCasual,
+            Self::Partner => WritingMode::Excited,
+            Self::FormalNeutral => WritingMode::Formal,
+        }
+    }
+
+    /// Get all available categories
+    pub fn all() -> &'static [ContactCategory] {
+        &[
+            ContactCategory::Professional,
+            ContactCategory::CloseFamily,
+            ContactCategory::CasualPeer,
+            ContactCategory::Partner,
+            ContactCategory::FormalNeutral,
+        ]
+    }
+}
+
+/// A contact entry with metadata and categorization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contact {
+    pub id: ContactId,
+    pub name: String,
+    pub organization: Option<String>,
+    pub category: ContactCategory,
+    pub frequency: u32,
+    pub last_contacted: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Contact {
+    pub fn new(name: String, organization: Option<String>, category: ContactCategory) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            name,
+            organization,
+            category,
+            frequency: 0,
+            last_contacted: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Update contact usage stats
+    pub fn record_interaction(&mut self) {
+        self.frequency += 1;
+        self.last_contacted = Some(Utc::now());
+        self.updated_at = Utc::now();
+    }
 }

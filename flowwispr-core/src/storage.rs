@@ -9,8 +9,9 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::types::{
-    AnalyticsEvent, AppCategory, AppContext, Correction, CorrectionSource, EventType, Shortcut,
-    Transcription, TranscriptionHistoryEntry, TranscriptionStatus, WritingMode,
+    AnalyticsEvent, AppCategory, AppContext, Contact, ContactCategory, Correction,
+    CorrectionSource, EventType, Shortcut, Transcription, TranscriptionHistoryEntry,
+    TranscriptionStatus, WritingMode,
 };
 
 /// Storage backend using SQLite
@@ -132,6 +133,17 @@ impl Storage {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                organization TEXT,
+                category TEXT NOT NULL,
+                frequency INTEGER NOT NULL DEFAULT 0,
+                last_contacted TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_transcriptions_created ON transcriptions(created_at);
             CREATE INDEX IF NOT EXISTS idx_shortcuts_trigger ON shortcuts(trigger);
             CREATE INDEX IF NOT EXISTS idx_corrections_original ON corrections(original);
@@ -139,6 +151,8 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
             CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
             CREATE INDEX IF NOT EXISTS idx_style_samples_app ON style_samples(app_name);
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
+            CREATE INDEX IF NOT EXISTS idx_contacts_frequency ON contacts(frequency DESC);
             "#,
         )?;
 
@@ -788,6 +802,188 @@ fn parse_writing_mode(s: &str) -> Option<WritingMode> {
         "VeryCasual" => Some(WritingMode::VeryCasual),
         "Excited" => Some(WritingMode::Excited),
         _ => None,
+    }
+}
+
+fn parse_contact_category(s: &str) -> ContactCategory {
+    match s {
+        "Professional" => ContactCategory::Professional,
+        "CloseFamily" => ContactCategory::CloseFamily,
+        "CasualPeer" => ContactCategory::CasualPeer,
+        "Partner" => ContactCategory::Partner,
+        "FormalNeutral" => ContactCategory::FormalNeutral,
+        _ => ContactCategory::FormalNeutral,
+    }
+}
+
+fn serialize_contact_category(category: ContactCategory) -> &'static str {
+    match category {
+        ContactCategory::Professional => "Professional",
+        ContactCategory::CloseFamily => "CloseFamily",
+        ContactCategory::CasualPeer => "CasualPeer",
+        ContactCategory::Partner => "Partner",
+        ContactCategory::FormalNeutral => "FormalNeutral",
+    }
+}
+
+impl Storage {
+    // ============ Contact Management ============
+
+    /// Save or update a contact
+    pub fn save_contact(&self, contact: &Contact) -> Result<()> {
+        let conn = self.conn.lock();
+
+        conn.execute(
+            r#"
+            INSERT INTO contacts (id, name, organization, category, frequency, last_contacted, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(name) DO UPDATE SET
+                organization = excluded.organization,
+                category = excluded.category,
+                frequency = excluded.frequency,
+                last_contacted = excluded.last_contacted,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                contact.id.to_string(),
+                contact.name,
+                contact.organization,
+                serialize_contact_category(contact.category),
+                contact.frequency as i64,
+                contact.last_contacted.map(|dt| dt.to_rfc3339()),
+                contact.created_at.to_rfc3339(),
+                contact.updated_at.to_rfc3339(),
+            ],
+        )?;
+
+        debug!("Saved contact: {}", contact.name);
+        Ok(())
+    }
+
+    /// Get a contact by name
+    pub fn get_contact_by_name(&self, name: &str) -> Result<Option<Contact>> {
+        let conn = self.conn.lock();
+
+        let contact = conn
+            .query_row(
+                "SELECT id, name, organization, category, frequency, last_contacted, created_at, updated_at
+                 FROM contacts WHERE name = ?1",
+                params![name],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let last_contacted: Option<String> = row.get(5)?;
+                    let created_at: String = row.get(6)?;
+                    let updated_at: String = row.get(7)?;
+
+                    Ok(Contact {
+                        id: Uuid::parse_str(&id).unwrap(),
+                        name: row.get(1)?,
+                        organization: row.get(2)?,
+                        category: parse_contact_category(&row.get::<_, String>(3)?),
+                        frequency: row.get::<_, i64>(4)? as u32,
+                        last_contacted: last_contacted.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))),
+                        created_at: DateTime::parse_from_rfc3339(&created_at)
+                            .unwrap()
+                            .with_timezone(&Utc),
+                        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(contact)
+    }
+
+    /// Get all contacts
+    pub fn get_all_contacts(&self) -> Result<Vec<Contact>> {
+        let conn = self.conn.lock();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, organization, category, frequency, last_contacted, created_at, updated_at
+             FROM contacts ORDER BY frequency DESC",
+        )?;
+
+        let contacts = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let last_contacted: Option<String> = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let updated_at: String = row.get(7)?;
+
+                Ok(Contact {
+                    id: Uuid::parse_str(&id).unwrap(),
+                    name: row.get(1)?,
+                    organization: row.get(2)?,
+                    category: parse_contact_category(&row.get::<_, String>(3)?),
+                    frequency: row.get::<_, i64>(4)? as u32,
+                    last_contacted: last_contacted.and_then(|s| {
+                        DateTime::parse_from_rfc3339(&s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    created_at: DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(contacts)
+    }
+
+    /// Get top N frequent contacts
+    pub fn get_frequent_contacts(&self, limit: usize) -> Result<Vec<Contact>> {
+        let conn = self.conn.lock();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, organization, category, frequency, last_contacted, created_at, updated_at
+             FROM contacts WHERE frequency > 0 ORDER BY frequency DESC LIMIT ?1",
+        )?;
+
+        let contacts = stmt
+            .query_map(params![limit as i64], |row| {
+                let id: String = row.get(0)?;
+                let last_contacted: Option<String> = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let updated_at: String = row.get(7)?;
+
+                Ok(Contact {
+                    id: Uuid::parse_str(&id).unwrap(),
+                    name: row.get(1)?,
+                    organization: row.get(2)?,
+                    category: parse_contact_category(&row.get::<_, String>(3)?),
+                    frequency: row.get::<_, i64>(4)? as u32,
+                    last_contacted: last_contacted.and_then(|s| {
+                        DateTime::parse_from_rfc3339(&s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    created_at: DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_at)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(contacts)
+    }
+
+    /// Delete a contact by name
+    pub fn delete_contact(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock();
+
+        conn.execute("DELETE FROM contacts WHERE name = ?1", params![name])?;
+
+        debug!("Deleted contact: {}", name);
+        Ok(())
     }
 }
 

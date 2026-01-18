@@ -207,6 +207,27 @@ impl AudioCapture {
         self.config.sample_rate
     }
 
+    /// Get current audio level (RMS amplitude) from the last 50ms of audio
+    /// Returns a value between 0.0 and 1.0
+    pub fn current_audio_level(&self) -> f32 {
+        let buffer = self.buffer.lock();
+        if buffer.is_empty() {
+            return 0.0;
+        }
+
+        // Calculate how many samples represent 50ms
+        let samples_per_50ms = (self.config.sample_rate as usize / 20).max(1);
+        let start_idx = buffer.len().saturating_sub(samples_per_50ms);
+        let recent_samples = &buffer[start_idx..];
+
+        // Calculate RMS (root mean square) for perceived loudness
+        let sum_squares: f32 = recent_samples.iter().map(|&s| s * s).sum();
+        let rms = (sum_squares / recent_samples.len() as f32).sqrt();
+
+        // Amplify a bit for visual effect (typical speech is quite quiet)
+        (rms * 3.0).min(1.0)
+    }
+
     fn build_stream<T>(
         &self,
         buffer: Arc<Mutex<Vec<f32>>>,

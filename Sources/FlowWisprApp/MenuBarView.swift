@@ -20,7 +20,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Text("App: \(appState.currentApp)")
+            Text("App: \(appState.targetAppName)")
                 .font(.caption)
 
             Text("Mode: \(appState.currentMode.displayName)")

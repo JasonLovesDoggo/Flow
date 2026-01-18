@@ -26,9 +26,9 @@ tracing = "0.1.44"
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 anyhow = "1"
 byteorder = "1.5"
-candle-core = { version = "0.9", features = ["metal"] }
-candle-nn = { version = "0.9", features = ["metal"] }
-candle-transformers = { version = "0.9", features = ["metal"] }
+candle-core = { version = "0.9", features = ["metal", "accelerate"] }
+candle-nn = { version = "0.9", features = ["metal", "accelerate"] }
+candle-transformers = { version = "0.9", features = ["metal", "accelerate"] }
 hf-hub = { version = "0.4.1", features = ["tokio"] }
 hound = "3"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }

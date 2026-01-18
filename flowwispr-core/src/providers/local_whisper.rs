@@ -1,13 +1,21 @@
-//! Local Whisper provider using Candle with Metal acceleration
+//! Local Whisper provider using Candle with Metal + Accelerate acceleration
+//!
+//! Model tiers (fastest to best quality):
+//! - Turbo: Quantized tiny (~15MB) - ultra-fast, lowest memory, good for drafts
+//! - Fast: Tiny (~39MB) - fast, lower accuracy
+//! - Balanced: Base (~142MB) - good speed/accuracy balance
+//! - Quality: Distilled medium (~400MB) - great accuracy, still fast (recommended)
+//! - Best: Distilled large-v3 (~750MB) - best quality available
 
 use crate::error::{Error, Result};
 use async_trait::async_trait;
 use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::whisper::{self as m, audio, Config};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use candle_transformers::models::whisper::{self as m, Config, audio};
+use candle_transformers::quantized_var_builder;
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use parking_lot::Mutex;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
@@ -17,44 +25,129 @@ use super::{TranscriptionProvider, TranscriptionRequest, TranscriptionResponse};
 // Include the mel filter bytes (80 mel bins for Whisper)
 const MEL_FILTER_BYTES: &[u8] = include_bytes!("../../melfilters.bytes");
 
-/// Whisper model sizes
-#[derive(Debug, Clone, Copy)]
+/// Whisper model variants with clear speed/quality tradeoffs
+///
+/// Models ordered by speed (fastest first):
+/// - Turbo: Quantized tiny (~15MB) - ultra-fast, lowest memory
+/// - Fast: Tiny (~39MB) - fast, lower accuracy
+/// - Balanced: Base (~142MB) - good speed/accuracy balance
+/// - Quality: Distilled medium (~400MB) - great accuracy, still fast (recommended)
+/// - Best: Distilled large-v3 (~750MB) - best quality available
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhisperModel {
-    Tiny,
-    Base,
-    Small,
+    /// Quantized tiny model (~15MB) - Ultra-fast, lowest memory usage
+    /// Speed: ⚡⚡⚡⚡⚡⚡ | Quality: ⭐⭐ | Memory: 💾
+    Turbo,
+
+    /// Tiny model (~39MB) - Fast, suitable for quick drafts
+    /// Speed: ⚡⚡⚡⚡⚡ | Quality: ⭐⭐
+    Fast,
+
+    /// Base model (~142MB) - Good balance of speed and accuracy
+    /// Speed: ⚡⚡⚡⚡ | Quality: ⭐⭐⭐
+    Balanced,
+
+    /// Distilled medium.en (~400MB) - Great accuracy, still fast (recommended)
+    /// Speed: ⚡⚡⚡⚡ | Quality: ⭐⭐⭐⭐
+    Quality,
+
+    /// Distilled large-v3 (~750MB) - Best quality available
+    /// Speed: ⚡⚡⚡ | Quality: ⭐⭐⭐⭐⭐
+    Best,
 }
 
 impl WhisperModel {
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse model from string (supports various naming conventions)
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "tiny" => Some(WhisperModel::Tiny),
-            "base" => Some(WhisperModel::Base),
-            "small" => Some(WhisperModel::Small),
+            "turbo" | "quantized" | "q" => Some(WhisperModel::Turbo),
+            "fast" | "tiny" => Some(WhisperModel::Fast),
+            "balanced" | "base" => Some(WhisperModel::Balanced),
+            "quality" | "small" | "distil_balanced" | "distil-balanced" => {
+                Some(WhisperModel::Quality)
+            }
+            "best" | "distil_quality" | "distil-quality" => Some(WhisperModel::Best),
             _ => None,
         }
     }
 
-    pub fn model_id(&self) -> (&'static str, &'static str) {
+    /// Get the canonical string name for this model
+    pub fn as_str(&self) -> &'static str {
         match self {
-            WhisperModel::Tiny => ("openai/whisper-tiny.en", "refs/pr/15"),
-            WhisperModel::Base => ("openai/whisper-base.en", "refs/pr/13"),
-            WhisperModel::Small => ("openai/whisper-small.en", "refs/pr/10"),
+            WhisperModel::Turbo => "turbo",
+            WhisperModel::Fast => "fast",
+            WhisperModel::Balanced => "balanced",
+            WhisperModel::Quality => "quality",
+            WhisperModel::Best => "best",
         }
     }
 
-    pub fn size_mb(&self) -> usize {
+    /// HuggingFace model ID and revision
+    pub fn model_id(&self) -> (&'static str, &'static str) {
         match self {
-            WhisperModel::Tiny => 39,
-            WhisperModel::Base => 142,
-            WhisperModel::Small => 466,
+            // Quantized model from lmz/candle-whisper
+            WhisperModel::Turbo => ("lmz/candle-whisper", "main"),
+            // Standard models
+            WhisperModel::Fast => ("openai/whisper-tiny.en", "refs/pr/15"),
+            WhisperModel::Balanced => ("openai/whisper-base.en", "refs/pr/13"),
+            WhisperModel::Quality => ("distil-whisper/distil-medium.en", "main"),
+            WhisperModel::Best => ("distil-whisper/distil-large-v3", "main"),
         }
     }
+
+    /// Approximate download size in MB
+    pub fn size_mb(&self) -> usize {
+        match self {
+            WhisperModel::Turbo => 15,
+            WhisperModel::Fast => 39,
+            WhisperModel::Balanced => 142,
+            WhisperModel::Quality => 400,
+            WhisperModel::Best => 750,
+        }
+    }
+
+    /// Human-readable description
+    pub fn description(&self) -> &'static str {
+        match self {
+            WhisperModel::Turbo => "Ultra-fast, lowest memory (~15MB)",
+            WhisperModel::Fast => "Fast, lower accuracy (~39MB)",
+            WhisperModel::Balanced => "Good speed/accuracy balance (~142MB)",
+            WhisperModel::Quality => "Great accuracy, still fast (~400MB) [recommended]",
+            WhisperModel::Best => "Best quality available (~750MB)",
+        }
+    }
+
+    /// Whether this is a quantized model
+    pub fn is_quantized(&self) -> bool {
+        matches!(self, WhisperModel::Turbo)
+    }
+
+    /// Whether this is a distilled model variant
+    pub fn is_distilled(&self) -> bool {
+        matches!(self, WhisperModel::Quality | WhisperModel::Best)
+    }
+
+    /// Get all available models
+    pub fn all() -> &'static [WhisperModel] {
+        &[
+            WhisperModel::Turbo,
+            WhisperModel::Fast,
+            WhisperModel::Balanced,
+            WhisperModel::Quality,
+            WhisperModel::Best,
+        ]
+    }
+}
+
+/// Model can be either quantized or full-precision
+enum Model {
+    Normal(m::model::Whisper),
+    Quantized(m::quantized_model::Whisper),
 }
 
 /// Whisper engine state
 struct WhisperEngine {
-    model: m::model::Whisper,
+    model: Model,
     tokenizer: Tokenizer,
     config: Config,
     device: Device,
@@ -62,27 +155,12 @@ struct WhisperEngine {
 }
 
 impl WhisperEngine {
-    async fn new(model_size: WhisperModel, models_dir: &PathBuf) -> Result<Self> {
+    async fn new(model_size: WhisperModel, models_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(models_dir).map_err(|e| {
             Error::Transcription(format!("Failed to create models directory: {}", e))
         })?;
 
         info!("Initializing Whisper {:?} model", model_size);
-
-        // Download model files if needed
-        let (config_path, tokenizer_path, weights_path) =
-            Self::ensure_model_files(model_size, models_dir).await?;
-
-        // Load config
-        let config: Config = serde_json::from_str(
-            &std::fs::read_to_string(&config_path)
-                .map_err(|e| Error::Transcription(format!("Failed to read config: {}", e)))?,
-        )
-        .map_err(|e| Error::Transcription(format!("Failed to parse config: {}", e)))?;
-
-        // Load tokenizer
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| Error::Transcription(format!("Failed to load tokenizer: {}", e)))?;
 
         // Setup device - try Metal (Apple Silicon GPU) first, fallback to CPU
         let device = if cfg!(target_os = "macos") {
@@ -100,15 +178,12 @@ impl WhisperEngine {
             Device::Cpu
         };
 
-        // Load model weights
-        info!("Loading model weights...");
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], m::DTYPE, &device).map_err(
-                |e| Error::Transcription(format!("Failed to load weights: {}", e)),
-            )?
+        // Load model based on type (quantized or normal)
+        let (model, config, tokenizer) = if model_size.is_quantized() {
+            Self::load_quantized_model(model_size, models_dir, &device).await?
+        } else {
+            Self::load_normal_model(model_size, models_dir, &device).await?
         };
-        let model = m::model::Whisper::load(&vb, config.clone())
-            .map_err(|e| Error::Transcription(format!("Failed to load model: {}", e)))?;
 
         // Load mel filters
         let mut mel_filters = vec![0f32; MEL_FILTER_BYTES.len() / 4];
@@ -128,12 +203,72 @@ impl WhisperEngine {
         })
     }
 
-    async fn ensure_model_files(
+    async fn load_normal_model(
         model_size: WhisperModel,
-        models_dir: &PathBuf,
+        models_dir: &Path,
+        device: &Device,
+    ) -> Result<(Model, Config, Tokenizer)> {
+        let (config_path, tokenizer_path, weights_path) =
+            Self::ensure_normal_model_files(model_size, models_dir).await?;
+
+        // Load config
+        let config: Config = serde_json::from_str(
+            &std::fs::read_to_string(&config_path)
+                .map_err(|e| Error::Transcription(format!("Failed to read config: {}", e)))?,
+        )
+        .map_err(|e| Error::Transcription(format!("Failed to parse config: {}", e)))?;
+
+        // Load tokenizer
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| Error::Transcription(format!("Failed to load tokenizer: {}", e)))?;
+
+        // Load model weights
+        info!("Loading model weights...");
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights_path], m::DTYPE, device)
+                .map_err(|e| Error::Transcription(format!("Failed to load weights: {}", e)))?
+        };
+        let model = m::model::Whisper::load(&vb, config.clone())
+            .map_err(|e| Error::Transcription(format!("Failed to load model: {}", e)))?;
+
+        Ok((Model::Normal(model), config, tokenizer))
+    }
+
+    async fn load_quantized_model(
+        model_size: WhisperModel,
+        models_dir: &Path,
+        device: &Device,
+    ) -> Result<(Model, Config, Tokenizer)> {
+        let (config_path, tokenizer_path, weights_path) =
+            Self::ensure_quantized_model_files(model_size, models_dir).await?;
+
+        // Load config
+        let config: Config = serde_json::from_str(
+            &std::fs::read_to_string(&config_path)
+                .map_err(|e| Error::Transcription(format!("Failed to read config: {}", e)))?,
+        )
+        .map_err(|e| Error::Transcription(format!("Failed to parse config: {}", e)))?;
+
+        // Load tokenizer
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| Error::Transcription(format!("Failed to load tokenizer: {}", e)))?;
+
+        // Load quantized model weights (GGUF format)
+        info!("Loading quantized model weights...");
+        let vb = quantized_var_builder::VarBuilder::from_gguf(&weights_path, device)
+            .map_err(|e| Error::Transcription(format!("Failed to load GGUF weights: {}", e)))?;
+        let model = m::quantized_model::Whisper::load(&vb, config.clone())
+            .map_err(|e| Error::Transcription(format!("Failed to load quantized model: {}", e)))?;
+
+        Ok((Model::Quantized(model), config, tokenizer))
+    }
+
+    async fn ensure_normal_model_files(
+        model_size: WhisperModel,
+        models_dir: &Path,
     ) -> Result<(PathBuf, PathBuf, PathBuf)> {
         let (model_id, revision) = model_size.model_id();
-        let model_name = model_id.split('/').last().unwrap();
+        let model_name = model_id.split('/').next_back().unwrap();
 
         let config_path = models_dir.join(format!("{}-config.json", model_name));
         let tokenizer_path = models_dir.join(format!("{}-tokenizer.json", model_name));
@@ -189,6 +324,57 @@ impl WhisperEngine {
         Ok((config_path, tokenizer_path, weights_path))
     }
 
+    async fn ensure_quantized_model_files(
+        _model_size: WhisperModel,
+        models_dir: &Path,
+    ) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        // Quantized models use different file naming from lmz/candle-whisper
+        let config_path = models_dir.join("config-tiny-en.json");
+        let tokenizer_path = models_dir.join("tokenizer-tiny-en.json");
+        let weights_path = models_dir.join("model-tiny-en-q80.gguf");
+
+        // Check if all files exist
+        if config_path.exists() && tokenizer_path.exists() && weights_path.exists() {
+            info!("Quantized model files already cached");
+            return Ok((config_path, tokenizer_path, weights_path));
+        }
+
+        // Download from lmz/candle-whisper
+        info!("Downloading quantized model files (~15MB)...");
+
+        let api = Api::new()
+            .map_err(|e| Error::Transcription(format!("Failed to init HuggingFace API: {}", e)))?;
+        let repo = api.repo(Repo::new("lmz/candle-whisper".to_string(), RepoType::Model));
+
+        // Download config
+        info!("Downloading config-tiny-en.json");
+        let config_file = repo
+            .get("config-tiny-en.json")
+            .map_err(|e| Error::Transcription(format!("Failed to download config: {}", e)))?;
+        std::fs::copy(&config_file, &config_path)
+            .map_err(|e| Error::Transcription(format!("Failed to save config: {}", e)))?;
+
+        // Download tokenizer
+        info!("Downloading tokenizer-tiny-en.json");
+        let tokenizer_file = repo
+            .get("tokenizer-tiny-en.json")
+            .map_err(|e| Error::Transcription(format!("Failed to download tokenizer: {}", e)))?;
+        std::fs::copy(&tokenizer_file, &tokenizer_path)
+            .map_err(|e| Error::Transcription(format!("Failed to save tokenizer: {}", e)))?;
+
+        // Download quantized weights (GGUF format)
+        info!("Downloading quantized model weights");
+        let weights_file = repo
+            .get("model-tiny-en-q80.gguf")
+            .map_err(|e| Error::Transcription(format!("Failed to download GGUF weights: {}", e)))?;
+        std::fs::copy(&weights_file, &weights_path)
+            .map_err(|e| Error::Transcription(format!("Failed to save weights: {}", e)))?;
+
+        info!("Quantized model downloaded successfully");
+
+        Ok((config_path, tokenizer_path, weights_path))
+    }
+
     fn transcribe_pcm(&mut self, pcm_data: &[f32]) -> Result<String> {
         debug!("Transcribing {} samples", pcm_data.len());
 
@@ -206,28 +392,60 @@ impl WhisperEngine {
         )
         .map_err(|e| Error::Transcription(format!("Failed to create mel tensor: {}", e)))?;
 
-        // Decode audio
-        let segments = self
-            .decode_audio(&mel)
-            .map_err(|e| Error::Transcription(format!("Failed to decode audio: {}", e)))?;
+        // Get token IDs upfront to avoid borrow issues
+        let sot_token = self.token_id(m::SOT_TOKEN)?;
+        let transcribe_token = self.token_id(m::TRANSCRIBE_TOKEN)?;
+        let eot_token = self.token_id(m::EOT_TOKEN)?;
+        let no_timestamps_token = self.token_id(m::NO_TIMESTAMPS_TOKEN)?;
+
+        // Decode audio based on model type
+        let segments = match &mut self.model {
+            Model::Normal(model) => Self::decode_audio_normal(
+                model,
+                &mel,
+                &self.tokenizer,
+                &self.config,
+                &self.device,
+                sot_token,
+                transcribe_token,
+                eot_token,
+                no_timestamps_token,
+            )?,
+            Model::Quantized(model) => Self::decode_audio_quantized(
+                model,
+                &mel,
+                &self.tokenizer,
+                &self.config,
+                &self.device,
+                sot_token,
+                transcribe_token,
+                eot_token,
+                no_timestamps_token,
+            )?,
+        };
 
         // Join segments
         let text = segments.join(" ");
         Ok(text.trim().to_string())
     }
 
-    fn decode_audio(&mut self, mel: &Tensor) -> Result<Vec<String>> {
+    #[allow(clippy::too_many_arguments)]
+    fn decode_audio_normal(
+        model: &mut m::model::Whisper,
+        mel: &Tensor,
+        tokenizer: &Tokenizer,
+        config: &Config,
+        device: &Device,
+        sot_token: u32,
+        transcribe_token: u32,
+        eot_token: u32,
+        no_timestamps_token: u32,
+    ) -> Result<Vec<String>> {
         let (_, _, content_frames) = mel
             .dims3()
             .map_err(|e| Error::Transcription(format!("Invalid mel dimensions: {}", e)))?;
         let mut segments = Vec::new();
         let mut seek = 0;
-
-        // Get token IDs
-        let sot_token = self.token_id(m::SOT_TOKEN)?;
-        let transcribe_token = self.token_id(m::TRANSCRIBE_TOKEN)?;
-        let eot_token = self.token_id(m::EOT_TOKEN)?;
-        let no_timestamps_token = self.token_id(m::NO_TIMESTAMPS_TOKEN)?;
 
         while seek < content_frames {
             let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
@@ -235,24 +453,21 @@ impl WhisperEngine {
                 .narrow(2, seek, segment_size)
                 .map_err(|e| Error::Transcription(format!("Failed to narrow mel: {}", e)))?;
 
-            let audio_features = self
-                .model
+            let audio_features = model
                 .encoder
                 .forward(&mel_segment, true)
                 .map_err(|e| Error::Transcription(format!("Encoder failed: {}", e)))?;
 
-            // Decode with greedy decoding
             let mut tokens = vec![sot_token, transcribe_token, no_timestamps_token];
-            let max_tokens = self.config.max_target_positions / 2;
+            let max_tokens = config.max_target_positions / 2;
 
             for i in 0..max_tokens {
-                let tokens_t = Tensor::new(tokens.as_slice(), &self.device)
+                let tokens_t = Tensor::new(tokens.as_slice(), device)
                     .map_err(|e| Error::Transcription(format!("Failed to create tokens: {}", e)))?
                     .unsqueeze(0)
                     .map_err(|e| Error::Transcription(format!("Failed to unsqueeze: {}", e)))?;
 
-                let decoder_output = self
-                    .model
+                let decoder_output = model
                     .decoder
                     .forward(&tokens_t, &audio_features, i == 0)
                     .map_err(|e| Error::Transcription(format!("Decoder failed: {}", e)))?;
@@ -265,8 +480,7 @@ impl WhisperEngine {
                     .i((..1, seq_len - 1..))
                     .map_err(|e| Error::Transcription(format!("Failed to index tail: {}", e)))?;
 
-                let logits = self
-                    .model
+                let logits = model
                     .decoder
                     .final_linear(&tail)
                     .map_err(|e| Error::Transcription(format!("Failed final linear: {}", e)))?
@@ -275,7 +489,6 @@ impl WhisperEngine {
                     .i(0)
                     .map_err(|e| Error::Transcription(format!("Failed to index: {}", e)))?;
 
-                // Get next token (greedy)
                 let next_token = logits
                     .argmax(0)
                     .map_err(|e| Error::Transcription(format!("Failed argmax: {}", e)))?
@@ -285,20 +498,101 @@ impl WhisperEngine {
                 if next_token == eot_token {
                     break;
                 }
-
                 tokens.push(next_token);
             }
 
-            // Decode tokens to text
-            let text = self
-                .tokenizer
+            let text = tokenizer
                 .decode(&tokens[3..], true)
                 .map_err(|e| Error::Transcription(format!("Failed to decode tokens: {}", e)))?;
 
             if !text.trim().is_empty() {
                 segments.push(text.trim().to_string());
             }
+            seek += segment_size;
+        }
 
+        Ok(segments)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_audio_quantized(
+        model: &mut m::quantized_model::Whisper,
+        mel: &Tensor,
+        tokenizer: &Tokenizer,
+        config: &Config,
+        device: &Device,
+        sot_token: u32,
+        transcribe_token: u32,
+        eot_token: u32,
+        no_timestamps_token: u32,
+    ) -> Result<Vec<String>> {
+        let (_, _, content_frames) = mel
+            .dims3()
+            .map_err(|e| Error::Transcription(format!("Invalid mel dimensions: {}", e)))?;
+        let mut segments = Vec::new();
+        let mut seek = 0;
+
+        while seek < content_frames {
+            let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
+            let mel_segment = mel
+                .narrow(2, seek, segment_size)
+                .map_err(|e| Error::Transcription(format!("Failed to narrow mel: {}", e)))?;
+
+            let audio_features = model
+                .encoder
+                .forward(&mel_segment, true)
+                .map_err(|e| Error::Transcription(format!("Encoder failed: {}", e)))?;
+
+            let mut tokens = vec![sot_token, transcribe_token, no_timestamps_token];
+            let max_tokens = config.max_target_positions / 2;
+
+            for i in 0..max_tokens {
+                let tokens_t = Tensor::new(tokens.as_slice(), device)
+                    .map_err(|e| Error::Transcription(format!("Failed to create tokens: {}", e)))?
+                    .unsqueeze(0)
+                    .map_err(|e| Error::Transcription(format!("Failed to unsqueeze: {}", e)))?;
+
+                let decoder_output = model
+                    .decoder
+                    .forward(&tokens_t, &audio_features, i == 0)
+                    .map_err(|e| Error::Transcription(format!("Decoder failed: {}", e)))?;
+
+                let (_, seq_len, _) = decoder_output.dims3().map_err(|e| {
+                    Error::Transcription(format!("Invalid decoder output dims: {}", e))
+                })?;
+
+                let tail = decoder_output
+                    .i((..1, seq_len - 1..))
+                    .map_err(|e| Error::Transcription(format!("Failed to index tail: {}", e)))?;
+
+                let logits = model
+                    .decoder
+                    .final_linear(&tail)
+                    .map_err(|e| Error::Transcription(format!("Failed final linear: {}", e)))?
+                    .i(0)
+                    .map_err(|e| Error::Transcription(format!("Failed to index: {}", e)))?
+                    .i(0)
+                    .map_err(|e| Error::Transcription(format!("Failed to index: {}", e)))?;
+
+                let next_token = logits
+                    .argmax(0)
+                    .map_err(|e| Error::Transcription(format!("Failed argmax: {}", e)))?
+                    .to_scalar::<u32>()
+                    .map_err(|e| Error::Transcription(format!("Failed to_scalar: {}", e)))?;
+
+                if next_token == eot_token {
+                    break;
+                }
+                tokens.push(next_token);
+            }
+
+            let text = tokenizer
+                .decode(&tokens[3..], true)
+                .map_err(|e| Error::Transcription(format!("Failed to decode tokens: {}", e)))?;
+
+            if !text.trim().is_empty() {
+                segments.push(text.trim().to_string());
+            }
             seek += segment_size;
         }
 
@@ -312,7 +606,7 @@ impl WhisperEngine {
     }
 }
 
-/// Local Whisper transcription provider with Metal acceleration
+/// Local Whisper transcription provider with Metal + Accelerate acceleration
 pub struct LocalWhisperTranscriptionProvider {
     engine: Arc<Mutex<Option<WhisperEngine>>>,
     model_size: WhisperModel,

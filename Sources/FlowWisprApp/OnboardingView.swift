@@ -233,7 +233,7 @@ struct OnboardingView: View {
 
     private func handleAdvance() {
         if step == .apiKey, !openAIKey.isEmpty {
-            appState.setApiKey(openAIKey)
+            appState.setApiKey(openAIKey, for: .openAI)
             openAIKey = ""
         }
 
