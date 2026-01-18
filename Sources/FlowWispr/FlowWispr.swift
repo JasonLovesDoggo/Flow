@@ -63,11 +63,13 @@ public enum AppCategory: UInt8, Sendable {
 public enum CompletionProvider: UInt8, Sendable {
     case openAI = 0
     case gemini = 1
+    case openRouter = 2
 
     public var displayName: String {
         switch self {
         case .openAI: return "OpenAI GPT"
         case .gemini: return "Gemini"
+        case .openRouter: return "OpenRouter"
         }
     }
 }
@@ -288,6 +290,19 @@ public final class FlowWispr: @unchecked Sendable {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let isSet = trimmedKey.withCString { cKey in
             flowwispr_set_gemini_api_key(handle, cKey)
+        }
+
+        return isSet
+    }
+
+    /// Set the OpenRouter API key
+    /// - Parameter apiKey: The OpenRouter API key
+    /// - Returns: true on success
+    public func setOpenRouterApiKey(_ apiKey: String) -> Bool {
+        guard let handle = handle else { return false }
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSet = trimmedKey.withCString { cKey in
+            flowwispr_set_openrouter_api_key(handle, cKey)
         }
 
         return isSet

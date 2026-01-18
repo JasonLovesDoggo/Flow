@@ -21,6 +21,7 @@ pub struct Storage {
 pub const SETTING_OPENAI_API_KEY: &str = "openai_api_key";
 pub const SETTING_GEMINI_API_KEY: &str = "gemini_api_key";
 pub const SETTING_ANTHROPIC_API_KEY: &str = "anthropic_api_key";
+pub const SETTING_OPENROUTER_API_KEY: &str = "openrouter_api_key";
 pub const SETTING_COMPLETION_PROVIDER: &str = "completion_provider";
 
 impl Storage {

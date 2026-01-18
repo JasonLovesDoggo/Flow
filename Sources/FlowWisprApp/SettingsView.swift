@@ -34,6 +34,8 @@ struct APISettingsSection: View {
     @State private var showOpenAIKey = false
     @State private var geminiKey = ""
     @State private var showGeminiKey = false
+    @State private var openRouterKey = ""
+    @State private var showOpenRouterKey = false
     @State private var selectedProvider: CompletionProvider = .openAI
 
     var body: some View {
@@ -48,7 +50,7 @@ struct APISettingsSection: View {
                     .foregroundStyle(FW.textPrimary)
 
                 Picker("", selection: $selectedProvider) {
-                    ForEach([CompletionProvider.openAI, CompletionProvider.gemini], id: \.rawValue) { provider in
+                    ForEach([CompletionProvider.openAI, CompletionProvider.gemini, CompletionProvider.openRouter], id: \.rawValue) { provider in
                         Text(provider.displayName).tag(provider)
                     }
                 }
@@ -56,7 +58,12 @@ struct APISettingsSection: View {
                 .labelsHidden()
                 .onChange(of: selectedProvider) { _, newProvider in
                     // Switch provider when selection changes
-                    let apiKey = newProvider == .openAI ? openAIKey : geminiKey
+                    let apiKey: String
+                    switch newProvider {
+                    case .openAI: apiKey = openAIKey
+                    case .gemini: apiKey = geminiKey
+                    case .openRouter: apiKey = openRouterKey
+                    }
                     if !apiKey.isEmpty {
                         appState.setProvider(newProvider, apiKey: apiKey)
                     }
@@ -151,6 +158,45 @@ struct APISettingsSection: View {
                 }
 
                 Text("Alternative provider for transcription and completion")
+                    .font(.caption)
+                    .foregroundStyle(FW.textTertiary)
+            }
+
+            // OpenRouter
+            VStack(alignment: .leading, spacing: FW.spacing8) {
+                Text("OpenRouter")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(FW.textPrimary)
+
+                HStack {
+                    Group {
+                        if showOpenRouterKey {
+                            TextField("sk-or-v1-...", text: $openRouterKey)
+                        } else {
+                            SecureField("sk-or-v1-...", text: $openRouterKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(FW.fontMonoSmall)
+
+                    Button {
+                        showOpenRouterKey.toggle()
+                    } label: {
+                        Image(systemName: showOpenRouterKey ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button("Save") {
+                        appState.setOpenRouterApiKey(openRouterKey)
+                        if selectedProvider == .openRouter {
+                            appState.setProvider(.openRouter, apiKey: openRouterKey)
+                        }
+                    }
+                    .buttonStyle(FWSecondaryButtonStyle())
+                    .disabled(openRouterKey.isEmpty)
+                }
+
+                Text("Access multiple LLM providers (Llama, Claude, GPT, etc.)")
                     .font(.caption)
                     .foregroundStyle(FW.textTertiary)
             }

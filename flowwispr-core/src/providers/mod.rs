@@ -4,12 +4,14 @@
 mod completion;
 mod gemini;
 mod openai;
+mod openrouter;
 mod streaming;
 mod transcription;
 
 pub use completion::{CompletionProvider, CompletionRequest, CompletionResponse, TokenUsage};
 pub use gemini::{GeminiCompletionProvider, GeminiTranscriptionProvider};
 pub use openai::{OpenAICompletionProvider, OpenAITranscriptionProvider};
+pub use openrouter::OpenRouterCompletionProvider;
 pub use streaming::{
     CompletionChunk, CompletionStream, StreamingCompletionProvider, collect_stream,
 };
