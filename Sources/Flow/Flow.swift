@@ -77,19 +77,19 @@ public enum CompletionProvider: UInt8, Sendable {
 /// Cloud transcription provider options (for remote transcription)
 public enum CloudTranscriptionProvider: UInt8, Sendable, CaseIterable {
     case openAI = 0
-    case base10 = 1
+    case auto = 1
 
     public var displayName: String {
         switch self {
         case .openAI: return "OpenAI"
-        case .base10: return "Base10"
+        case .auto: return "Auto"
         }
     }
 
     public var description: String {
         switch self {
         case .openAI: return "OpenAI Whisper API"
-        case .base10: return "Base10 Whisper (Faster)"
+        case .auto: return "Fastest available (recommended)"
         }
     }
 }

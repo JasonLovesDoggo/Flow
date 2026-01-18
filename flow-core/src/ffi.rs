@@ -25,10 +25,10 @@ use crate::learning::LearningEngine;
 use crate::macos_messages::MessagesDetector;
 use crate::modes::{StyleLearner, WritingMode, WritingModeEngine};
 use crate::providers::{
-    Base10TranscriptionProvider, CompletionProvider, CompletionRequest, GeminiCompletionProvider,
+    Base10TranscriptionProvider, CompletionProvider, GeminiCompletionProvider,
     GeminiTranscriptionProvider, LocalWhisperTranscriptionProvider, OpenAICompletionProvider,
-    OpenAITranscriptionProvider, OpenRouterCompletionProvider, TranscriptionProvider,
-    TranscriptionRequest, WhisperModel,
+    OpenAITranscriptionProvider, OpenRouterCompletionProvider, TranscriptionCompletionParams,
+    TranscriptionProvider, TranscriptionRequest, WhisperModel,
 };
 use crate::shortcuts::ShortcutsEngine;
 use crate::storage::{
@@ -208,13 +208,9 @@ fn load_persisted_configuration(handle: &mut FlowHandle) {
                 debug!("Restoring OpenAI transcription provider from database");
                 handle.transcription = Arc::new(OpenAITranscriptionProvider::new(openai_key));
             }
-            Some("gemini") => {
-                debug!("Restoring Gemini transcription provider from database");
-                handle.transcription = Arc::new(GeminiTranscriptionProvider::new(gemini_key));
-            }
             _ => {
-                // Default to Base10 (no API key needed, uses proxy)
-                debug!("Using Base10 transcription provider (default)");
+                // Default to Auto (worker handles transcription + completion)
+                debug!("Using Auto transcription provider (default)");
                 handle.transcription = Arc::new(Base10TranscriptionProvider::new(None));
             }
         }
@@ -561,57 +557,68 @@ fn transcribe_with_audio(
     };
 
     let transcription_provider = Arc::clone(&handle.transcription);
-    let completion_provider = Arc::clone(&handle.completion);
     let app_context = handle.app_tracker.current_app();
 
+    // Check if using local transcription
+    let use_local_transcription = handle
+        .storage
+        .get_setting(SETTING_USE_LOCAL_TRANSCRIPTION)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    // Build mode string for worker
+    let mode_str = match mode {
+        WritingMode::Formal => "formal",
+        WritingMode::Casual => "casual",
+        WritingMode::VeryCasual => "very_casual",
+        WritingMode::Excited => "excited",
+    };
+
+    // For cloud transcription (auto mode), worker handles everything
+    let completion_params = if !use_local_transcription {
+        log_with_time!("🚀 [RUST] Using auto mode (worker handles transcription+completion)");
+        Some(TranscriptionCompletionParams {
+            mode: mode_str.to_string(),
+            app_context: app_name.clone(),
+            shortcuts_triggered: Vec::new(),
+        })
+    } else {
+        None
+    };
+
+    // Perform transcription
     let transcription = handle.runtime.block_on(async {
-        let request = TranscriptionRequest::new(audio_data, sample_rate);
+        let mut request = TranscriptionRequest::new(audio_data, sample_rate);
+        if let Some(params) = completion_params {
+            request = request.with_completion(params);
+        }
         transcription_provider.transcribe(request).await
     })?;
 
+    // Process shortcuts and corrections on raw transcription
     let (text_with_shortcuts, triggered) = handle.shortcuts.process(&transcription.text);
     let (text_with_corrections, _applied) = handle.learning.apply_corrections(&text_with_shortcuts);
 
-    log_with_time!("🤖 [RUST/AI] Starting AI completion with mode: {:?}", mode);
-    let completion_result = handle.runtime.block_on(async {
-        let mut completion_request = if let Some(name) = app_name.clone() {
-            CompletionRequest::new(text_with_corrections.clone(), mode).with_app_context(name)
-        } else {
-            CompletionRequest::new(text_with_corrections.clone(), mode)
-        };
-
-        // If shortcuts were triggered, add strong instruction to preserve them
-        if !triggered.is_empty() {
-            let shortcuts_info: Vec<String> = triggered
-                .iter()
-                .map(|t| format!("\"{}\"", t.replacement))
-                .collect();
-            let preserve_instruction = format!(
-                "\n\n=== CRITICAL INSTRUCTION ===\nThe input text contains voice shortcut expansions that MUST be output exactly as written, word-for-word, with NO modifications, rewording, or style changes whatsoever.\n\nShortcut text to preserve EXACTLY: {}\n\nDo NOT paraphrase, rephrase, or alter these phrases in any way. Copy them verbatim into your output.\n=== END CRITICAL INSTRUCTION ===",
-                shortcuts_info.join(", ")
-            );
-            completion_request = completion_request.with_shortcut_preservation(preserve_instruction);
-        }
-
-        completion_provider.complete(completion_request).await
-    });
-
-    let processed_text = match completion_result {
-        Ok(completion) => {
-            log_with_time!(
-                "✅ [RUST/AI] AI completion succeeded - Output: {} chars",
-                completion.text.len()
-            );
-            completion.text
-        }
-        Err(err) => {
-            log_with_time!(
-                "❌ [RUST/AI] Completion failed, using corrected text: {}",
-                err
-            );
-            text_with_corrections.clone()
-        }
+    // Use worker completion if available, otherwise use corrected transcription
+    let processed_text = if let Some(completed_text) = transcription.completed_text {
+        log_with_time!(
+            "✅ [RUST/AI] Worker completion received - Output: {} chars",
+            completed_text.len()
+        );
+        completed_text
+    } else {
+        // Local transcription mode - use corrected text directly (no separate completion)
+        log_with_time!(
+            "📝 [RUST] Local transcription mode - using corrected text: {} chars",
+            text_with_corrections.len()
+        );
+        text_with_corrections.clone()
     };
+
+    // Suppress unused warning for triggered shortcuts (used by worker)
+    let _ = triggered;
 
     let mut record = Transcription::new(
         transcription.text,
@@ -1516,7 +1523,7 @@ pub extern "C" fn flow_set_transcription_mode(
             .get_setting(SETTING_CLOUD_TRANSCRIPTION_PROVIDER)
         {
             Ok(Some(name)) => name,
-            _ => "base10".to_string(), // default to Base10
+            _ => "auto".to_string(), // default to Auto
         };
 
         match cloud_provider.as_str() {
@@ -1530,10 +1537,9 @@ pub extern "C" fn flow_set_transcription_mode(
                 }
             }
             _ => {
-                // Default to Base10 (includes "base10" and any unknown value)
-                // Base10 uses a proxy that handles auth, no API key needed
+                // Default to Auto (worker handles transcription + completion)
                 handle.transcription = Arc::new(Base10TranscriptionProvider::new(None));
-                debug!("Enabled Base10 remote transcription");
+                debug!("Enabled Auto transcription (worker handles everything)");
             }
         }
     }
@@ -1881,7 +1887,7 @@ pub extern "C" fn flow_get_writing_mode_for_category(
 // ============ Cloud Transcription Provider ============
 
 /// Set cloud transcription provider (saves preference)
-/// provider: 0 = OpenAI, 1 = Base10
+/// provider: 0 = OpenAI, 1 = Auto (default)
 /// Returns true on success
 #[unsafe(no_mangle)]
 pub extern "C" fn flow_set_cloud_transcription_provider(
@@ -1892,11 +1898,11 @@ pub extern "C" fn flow_set_cloud_transcription_provider(
 
     let provider_name = match provider {
         0 => "openai",
-        1 => "base10",
+        1 => "auto",
         _ => {
             set_last_error(
                 handle,
-                "Invalid cloud transcription provider (0=OpenAI, 1=Base10)",
+                "Invalid cloud transcription provider (0=OpenAI, 1=Auto)",
             );
             return false;
         }
@@ -1918,7 +1924,7 @@ pub extern "C" fn flow_set_cloud_transcription_provider(
 }
 
 /// Get the current cloud transcription provider
-/// Returns: 0 = OpenAI, 1 = Base10
+/// Returns: 0 = OpenAI, 1 = Auto (default)
 #[unsafe(no_mangle)]
 pub extern "C" fn flow_get_cloud_transcription_provider(handle: *mut FlowHandle) -> u8 {
     let handle = unsafe { &*handle };
@@ -1929,9 +1935,9 @@ pub extern "C" fn flow_get_cloud_transcription_provider(handle: *mut FlowHandle)
     {
         Ok(Some(name)) => match name.as_str() {
             "openai" => 0,
-            "base10" => 1,
-            _ => 1, // default to Base10
+            "auto" => 1,
+            _ => 1, // default to Auto
         },
-        _ => 1, // default to Base10
+        _ => 1, // default to Auto
     }
 }

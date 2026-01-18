@@ -17,6 +17,19 @@ pub struct TranscriptionRequest {
     pub language: Option<String>,
     /// Optional prompt to guide transcription
     pub prompt: Option<String>,
+    /// Optional completion parameters for combined transcription+completion
+    pub completion: Option<CompletionParams>,
+}
+
+/// Parameters for completion (used in combined transcription+completion flow)
+#[derive(Debug, Clone)]
+pub struct CompletionParams {
+    /// Writing mode (e.g., "formal", "casual", "very_casual", "excited")
+    pub mode: String,
+    /// App context for formatting
+    pub app_context: Option<String>,
+    /// Shortcut replacement texts that must be preserved exactly
+    pub shortcuts_triggered: Vec<String>,
 }
 
 impl TranscriptionRequest {
@@ -26,6 +39,7 @@ impl TranscriptionRequest {
             sample_rate,
             language: None,
             prompt: None,
+            completion: None,
         }
     }
 
@@ -36,6 +50,11 @@ impl TranscriptionRequest {
 
     pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.prompt = Some(prompt.into());
+        self
+    }
+
+    pub fn with_completion(mut self, params: CompletionParams) -> Self {
+        self.completion = Some(params);
         self
     }
 }
@@ -53,6 +72,9 @@ pub struct TranscriptionResponse {
     pub duration_ms: u64,
     /// Individual word segments if available
     pub segments: Option<Vec<TranscriptionSegment>>,
+    /// Completed/formatted text if worker performed completion
+    #[serde(default)]
+    pub completed_text: Option<String>,
 }
 
 /// A segment of transcribed text with timing

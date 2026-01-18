@@ -126,6 +126,7 @@ impl TranscriptionProvider for OpenAITranscriptionProvider {
             language: whisper_response.language,
             duration_ms,
             segments: None,
+            completed_text: None,
         })
     }
 

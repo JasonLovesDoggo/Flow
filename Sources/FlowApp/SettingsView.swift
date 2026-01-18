@@ -10,6 +10,9 @@ import Flow
 import SwiftUI
 
 struct SettingsContentView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var autoModeEnabled = true
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: FW.spacing24) {
@@ -17,8 +20,13 @@ struct SettingsContentView: View {
                     .font(.title.weight(.bold))
                     .foregroundStyle(FW.textPrimary)
 
-                TranscriptionSection()
-                APIKeysSection()
+                AutoModeSection(autoModeEnabled: $autoModeEnabled)
+
+                if !autoModeEnabled {
+                    TranscriptionSection()
+                    APIKeysSection()
+                }
+
                 GeneralSection()
                 KeyboardSection()
                 StatsSection()
@@ -31,16 +39,61 @@ struct SettingsContentView: View {
             .padding(FW.spacing32)
         }
         .background(FW.background)
+        .onAppear {
+            // Check if cloud provider is auto
+            if let provider = appState.engine.cloudTranscriptionProvider {
+                autoModeEnabled = (provider == .auto)
+            }
+        }
     }
 }
 
-// MARK: - Transcription Section
+// MARK: - Auto Mode Section
+
+private struct AutoModeSection: View {
+    @EnvironmentObject var appState: AppState
+    @Binding var autoModeEnabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FW.spacing12) {
+            Text("Mode")
+                .fwSectionHeader()
+
+            VStack(spacing: FW.spacing16) {
+                FWToggle(isOn: $autoModeEnabled, label: "Full Auto")
+                    .onChange(of: autoModeEnabled) { _, newValue in
+                        if newValue {
+                            // Enable auto mode: use worker for everything
+                            _ = appState.engine.setCloudTranscriptionProvider(.auto)
+                            _ = appState.engine.setTranscriptionMode(.remote)
+                        } else {
+                            // Disable auto: switch to OpenAI (user needs API key)
+                            _ = appState.engine.setCloudTranscriptionProvider(.openAI)
+                        }
+                    }
+
+                HStack(spacing: FW.spacing8) {
+                    Circle()
+                        .fill(autoModeEnabled ? FW.success : FW.textMuted)
+                        .frame(width: 8, height: 8)
+                    Text(autoModeEnabled
+                        ? "Everything handled automatically. No API keys needed."
+                        : "Manual configuration. Bring your own API keys.")
+                        .font(.caption)
+                        .foregroundStyle(autoModeEnabled ? FW.success : FW.textSecondary)
+                }
+            }
+            .fwSection()
+        }
+    }
+}
+
+// MARK: - Transcription Section (shown when Auto is OFF)
 
 private struct TranscriptionSection: View {
     @EnvironmentObject var appState: AppState
     @State private var useLocalTranscription = false
     @State private var selectedWhisperModel: WhisperModel = .balanced
-    @State private var selectedCloudProvider: CloudTranscriptionProvider = .base10
 
     var body: some View {
         VStack(alignment: .leading, spacing: FW.spacing12) {
@@ -69,53 +122,23 @@ private struct TranscriptionSection: View {
                             }
                     }
                 } else {
-                    // Cloud transcription provider selection
-                    VStack(alignment: .leading, spacing: FW.spacing12) {
-                        Text("Cloud Provider")
-                            .font(.subheadline)
-                            .foregroundStyle(FW.textSecondary)
-
-                        CloudTranscriptionProviderPicker(selection: $selectedCloudProvider)
-                            .onChange(of: selectedCloudProvider) { _, newProvider in
-                                // Save the provider preference and switch
-                                _ = appState.engine.setCloudTranscriptionProvider(newProvider)
-                                _ = appState.engine.setTranscriptionMode(.remote)
-                            }
-
-                        // Status indicator
-                        HStack(spacing: FW.spacing8) {
-                            Circle()
-                                .fill(isCloudProviderConfigured ? FW.success : FW.warning)
-                                .frame(width: 8, height: 8)
-                            Text(cloudProviderStatusText)
-                                .font(.caption)
-                                .foregroundStyle(isCloudProviderConfigured ? FW.success : FW.warning)
-                        }
+                    // Cloud transcription uses OpenAI when not in Auto mode
+                    HStack(spacing: FW.spacing8) {
+                        Circle()
+                            .fill(appState.engine.maskedOpenAIKey != nil ? FW.success : FW.warning)
+                            .frame(width: 8, height: 8)
+                        Text(appState.engine.maskedOpenAIKey != nil
+                            ? "OpenAI transcription configured"
+                            : "OpenAI API key required (see below)")
+                            .font(.caption)
+                            .foregroundStyle(appState.engine.maskedOpenAIKey != nil ? FW.success : FW.warning)
                     }
                 }
-
             }
             .fwSection()
         }
         .onAppear {
             loadCurrentMode()
-        }
-    }
-
-    private var isCloudProviderConfigured: Bool {
-        switch selectedCloudProvider {
-        case .openAI:
-            return appState.engine.maskedOpenAIKey != nil
-        case .base10:
-            return true // Base10 uses a proxy, no API key needed
-        }
-    }
-
-    private var cloudProviderStatusText: String {
-        if isCloudProviderConfigured {
-            return "\(selectedCloudProvider.displayName) configured"
-        } else {
-            return "OpenAI API key required (see API Keys section)"
         }
     }
 
@@ -128,52 +151,6 @@ private struct TranscriptionSection: View {
             case .remote:
                 useLocalTranscription = false
             }
-        }
-        // Load cloud provider setting
-        if let provider = appState.engine.cloudTranscriptionProvider {
-            selectedCloudProvider = provider
-        }
-    }
-}
-
-private struct CloudTranscriptionProviderPicker: View {
-    @Binding var selection: CloudTranscriptionProvider
-
-    private let providers: [(CloudTranscriptionProvider, String, String)] = [
-        (.openAI, "OpenAI", "Uses your OpenAI API key"),
-        (.base10, "Base10", "Dedicated Whisper endpoint")
-    ]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(providers, id: \.0) { provider, label, tooltip in
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        selection = provider
-                    }
-                } label: {
-                    Text(label)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(selection == provider ? FW.textPrimary : FW.textSecondary)
-                        .padding(.horizontal, FW.spacing16)
-                        .padding(.vertical, FW.spacing8)
-                        .frame(maxWidth: .infinity)
-                        .background {
-                            if selection == provider {
-                                RoundedRectangle(cornerRadius: FW.radiusSmall - 2)
-                                    .fill(FW.surface)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(tooltip)
-            }
-        }
-        .padding(3)
-        .background {
-            RoundedRectangle(cornerRadius: FW.radiusSmall)
-                .fill(FW.background)
         }
     }
 }

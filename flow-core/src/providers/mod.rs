@@ -19,4 +19,7 @@ pub use openrouter::OpenRouterCompletionProvider;
 pub use streaming::{
     CompletionChunk, CompletionStream, StreamingCompletionProvider, collect_stream,
 };
-pub use transcription::{TranscriptionProvider, TranscriptionRequest, TranscriptionResponse};
+pub use transcription::{
+    CompletionParams as TranscriptionCompletionParams, TranscriptionProvider, TranscriptionRequest,
+    TranscriptionResponse,
+};

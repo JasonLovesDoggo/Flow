@@ -207,6 +207,7 @@ impl TranscriptionProvider for GeminiTranscriptionProvider {
             language: request.language,
             duration_ms,
             segments: None,
+            completed_text: None,
         })
     }
 
