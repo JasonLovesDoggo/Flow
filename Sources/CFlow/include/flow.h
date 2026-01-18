@@ -1,5 +1,5 @@
 //
-// flowwispr.h
+// flow.h
 // Flow C Interface
 //
 // Auto-generated header for the Flow Rust FFI layer.
@@ -133,7 +133,7 @@ uint64_t flow_transcription_count(FlowHandle* handle);
 
 // ============ Utilities ============
 
-/// Free a string returned by flowwispr functions
+/// Free a string returned by flow functions
 /// @param s String to free
 void flow_free_string(char* s);
 

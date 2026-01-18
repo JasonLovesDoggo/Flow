@@ -1,6 +1,6 @@
-# FlowWispr Core
+# libflow
 
-FlowWispr Core is a Rust library that powers a cloud-first voice dictation engine with AI formatting, app-aware writing modes, and self-learning corrections. It is designed to be used directly from Rust or via the bundled C-compatible FFI layer for Swift integration.
+libflow is a Rust library that powers a cloud-first voice dictation engine with AI formatting, app-aware writing modes, and self-learning corrections. It is designed to be used directly from Rust or via the bundled C-compatible FFI layer for Swift integration.
 
 ## Features
 

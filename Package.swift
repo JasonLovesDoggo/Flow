@@ -46,7 +46,7 @@ let package = Package(
         // C wrapper for the Rust FFI
         .target(
             name: "CFlow",
-            path: "Sources/CFlowWispr",
+            path: "Sources/CFlow",
             publicHeadersPath: "include",
             linkerSettings: [
                 // Link to the Rust static library
@@ -68,7 +68,7 @@ let package = Package(
         .target(
             name: "Flow",
             dependencies: ["CFlow"],
-            path: "Sources/FlowWispr"
+            path: "Sources/Flow"
         ),
         // macOS App
         .executableTarget(
@@ -77,7 +77,7 @@ let package = Package(
                 "Flow",
                 .product(name: "Amplitude", package: "Amplitude-iOS"),
             ],
-            path: "Sources/FlowWisprApp",
+            path: "Sources/FlowApp",
             resources: [
                 .process("Resources"),
                 .copy("../../menubar.svg"),

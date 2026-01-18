@@ -786,7 +786,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowwispr-core"
+name = "flow-core"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",

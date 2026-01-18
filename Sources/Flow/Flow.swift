@@ -127,12 +127,12 @@ public final class Flow: @unchecked Sendable {
         let path = dbPath ?? {
             let fm = FileManager.default
             let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let flowDir = appSupport.appendingPathComponent("flowwispr")
+            let flowDir = appSupport.appendingPathComponent("flow")
 
             // Create directory if needed
             try? fm.createDirectory(at: flowDir, withIntermediateDirectories: true)
 
-            return flowDir.appendingPathComponent("flowwispr.db").path
+            return flowDir.appendingPathComponent("flow.db").path
         }()
 
         handle = path.withCString { cPath in
