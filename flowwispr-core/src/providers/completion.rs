@@ -19,6 +19,8 @@ pub struct CompletionRequest {
     pub app_context: Option<String>,
     /// Max tokens to generate
     pub max_tokens: Option<u32>,
+    /// Instruction to preserve shortcut text word-for-word
+    pub shortcut_preservation: Option<String>,
 }
 
 impl CompletionRequest {
@@ -29,6 +31,7 @@ impl CompletionRequest {
             system_prompt: None,
             app_context: None,
             max_tokens: None,
+            shortcut_preservation: None,
         }
     }
 
@@ -44,6 +47,11 @@ impl CompletionRequest {
 
     pub fn with_max_tokens(mut self, max: u32) -> Self {
         self.max_tokens = Some(max);
+        self
+    }
+
+    pub fn with_shortcut_preservation(mut self, instruction: impl Into<String>) -> Self {
+        self.shortcut_preservation = Some(instruction.into());
         self
     }
 }

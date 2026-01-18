@@ -431,15 +431,29 @@ fn transcribe_with_audio(
         transcription_provider.transcribe(request).await
     })?;
 
-    let (text_with_shortcuts, _triggered) = handle.shortcuts.process(&transcription.text);
+    let (text_with_shortcuts, triggered) = handle.shortcuts.process(&transcription.text);
     let (text_with_corrections, _applied) = handle.learning.apply_corrections(&text_with_shortcuts);
 
     let completion_result = handle.runtime.block_on(async {
-        let completion_request = if let Some(name) = app_name.clone() {
+        let mut completion_request = if let Some(name) = app_name.clone() {
             CompletionRequest::new(text_with_corrections.clone(), mode).with_app_context(name)
         } else {
             CompletionRequest::new(text_with_corrections.clone(), mode)
         };
+
+        // If shortcuts were triggered, add strong instruction to preserve them
+        if !triggered.is_empty() {
+            let shortcuts_info: Vec<String> = triggered
+                .iter()
+                .map(|t| format!("\"{}\"", t.replacement))
+                .collect();
+            let preserve_instruction = format!(
+                "\n\n=== CRITICAL INSTRUCTION ===\nThe input text contains voice shortcut expansions that MUST be output exactly as written, word-for-word, with NO modifications, rewording, or style changes whatsoever.\n\nShortcut text to preserve EXACTLY: {}\n\nDo NOT paraphrase, rephrase, or alter these phrases in any way. Copy them verbatim into your output.\n=== END CRITICAL INSTRUCTION ===",
+                shortcuts_info.join(", ")
+            );
+            completion_request = completion_request.with_shortcut_preservation(preserve_instruction);
+        }
+
         completion_provider.complete(completion_request).await
     });
 

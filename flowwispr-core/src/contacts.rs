@@ -143,11 +143,13 @@ impl ContactClassifier {
     }
 
     /// Classify a single contact using strict ordering heuristics
+    /// CRITICAL: Partner detection has ABSOLUTE HIGHEST PRIORITY and overrides everything
     pub fn classify(&self, input: &ContactInput) -> ContactCategory {
         let name_lower = input.name.to_lowercase();
         let name_trimmed = input.name.trim();
 
         // RULE 1: Partner detection (romantic emojis + terms of endearment)
+        // HIGHEST PRIORITY - overrides organization field and all other indicators
         if self.has_partner_emoji(name_trimmed) || self.partner_patterns.is_match(&name_lower) {
             return ContactCategory::Partner;
         }
@@ -158,7 +160,6 @@ impl ContactClassifier {
         }
 
         // RULE 3: Professional detection (organization OR professional titles/credentials)
-        // CRITICAL: Organization field presence is highest priority
         if !input.organization.is_empty() {
             return ContactCategory::Professional;
         }
@@ -328,6 +329,41 @@ mod tests {
                 ContactCategory::Partner,
                 "Failed for: {}",
                 case.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_partner_overrides_organization() {
+        let classifier = ContactClassifier::new();
+
+        // CRITICAL: Partner indicators must override organization field
+        let cases = vec![
+            ContactInput {
+                name: "Bae".to_string(),
+                organization: "Acme Corp".to_string()
+            },
+            ContactInput {
+                name: "❤️ Alex".to_string(),
+                organization: "Tech Inc".to_string()
+            },
+            ContactInput {
+                name: "My Love".to_string(),
+                organization: "Business LLC".to_string()
+            },
+            ContactInput {
+                name: "Hubby 💍".to_string(),
+                organization: "Company XYZ".to_string()
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                classifier.classify(&case),
+                ContactCategory::Partner,
+                "Partner detection MUST override organization field. Failed for: {} at {}",
+                case.name,
+                case.organization
             );
         }
     }

@@ -315,9 +315,14 @@ impl CompletionProvider for GeminiCompletionProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         let api_key = self.api_key()?;
 
-        let system_prompt = request.system_prompt.unwrap_or_else(|| {
+        let mut system_prompt = request.system_prompt.unwrap_or_else(|| {
             self.build_system_prompt(request.mode, request.app_context.as_deref())
         });
+
+        // Add shortcut preservation instruction if present
+        if let Some(preservation) = request.shortcut_preservation {
+            system_prompt.push_str(&preservation);
+        }
 
         let chat_request = ChatRequest {
             model: self.model.clone(),
