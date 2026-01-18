@@ -105,27 +105,34 @@ struct RecordView: View {
     // MARK: - Stats Section
 
     private var statsSection: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: FW.spacing12)], spacing: FW.spacing12) {
-            statCard(
-                icon: "mic.fill",
-                iconColor: FW.accent,
-                value: "\(appState.todayTranscriptions)",
-                label: "Today"
-            )
+        ViewThatFits(in: .horizontal) {
+            // Try 3 across
+            HStack(spacing: FW.spacing12) {
+                statCard(icon: "mic.fill", iconColor: FW.accent, value: "\(appState.todayTranscriptions)", label: "Today")
+                    .frame(minWidth: 130)
+                statCard(icon: "textformat", iconColor: FW.accent, value: "\(appState.totalWordsDictated)", label: "Words")
+                    .frame(minWidth: 130)
+                statCard(icon: "clock.fill", iconColor: FW.textMuted, value: "\(appState.totalMinutes)", label: "Minutes")
+                    .frame(minWidth: 130)
+            }
 
-            statCard(
-                icon: "textformat",
-                iconColor: FW.accent,
-                value: "\(appState.totalWordsDictated)",
-                label: "Words"
-            )
+            // Try 2 + 1
+            VStack(spacing: FW.spacing12) {
+                HStack(spacing: FW.spacing12) {
+                    statCard(icon: "mic.fill", iconColor: FW.accent, value: "\(appState.todayTranscriptions)", label: "Today")
+                        .frame(minWidth: 130)
+                    statCard(icon: "textformat", iconColor: FW.accent, value: "\(appState.totalWordsDictated)", label: "Words")
+                        .frame(minWidth: 130)
+                }
+                statCard(icon: "clock.fill", iconColor: FW.textMuted, value: "\(appState.totalMinutes)", label: "Minutes")
+            }
 
-            statCard(
-                icon: "clock.fill",
-                iconColor: FW.textMuted,
-                value: "\(appState.totalMinutes)",
-                label: "Minutes"
-            )
+            // Stack all
+            VStack(spacing: FW.spacing12) {
+                statCard(icon: "mic.fill", iconColor: FW.accent, value: "\(appState.todayTranscriptions)", label: "Today")
+                statCard(icon: "textformat", iconColor: FW.accent, value: "\(appState.totalWordsDictated)", label: "Words")
+                statCard(icon: "clock.fill", iconColor: FW.textMuted, value: "\(appState.totalMinutes)", label: "Minutes")
+            }
         }
     }
 
@@ -148,10 +155,13 @@ struct RecordView: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(FW.textSecondary)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .lineLimit(1)
             }
+
+            Spacer(minLength: 0)
         }
         .padding(FW.spacing16)
+        .frame(maxWidth: .infinity)
         .fwSection()
     }
 
