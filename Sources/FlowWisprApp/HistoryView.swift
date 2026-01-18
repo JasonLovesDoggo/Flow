@@ -66,61 +66,9 @@ struct HistoryListView: View {
     }
 
     private func historyRow(_ item: TranscriptionSummary) -> some View {
-        HStack(alignment: .top, spacing: FW.spacing16) {
-            VStack(alignment: .leading, spacing: FW.spacing4) {
-                Text(timeFormatter.string(from: item.createdAt))
-                    .font(FW.fontMonoSmall)
-                    .foregroundStyle(FW.textTertiary)
-
-                if item.status == .failed {
-                    Text("Failed")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(FW.warning)
-                }
-            }
-            .frame(width: 80, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: FW.spacing8) {
-                if item.status == .success {
-                    Text(item.text)
-                        .font(.subheadline)
-                        .foregroundStyle(FW.textPrimary)
-                        .help(item.rawText.isEmpty ? item.text : "Raw: \(item.rawText)")
-                } else {
-                    Text(item.error ?? "Transcription failed")
-                        .font(.subheadline)
-                        .foregroundStyle(FW.textSecondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, FW.spacing12)
-
-            HStack(spacing: FW.spacing8) {
-                if item.status == .success {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(item.text, forType: .string)
-                        Analytics.shared.track("History Item Copied", eventProperties: [
-                            "text_length": item.text.count
-                        ])
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .font(.caption)
-                    }
-                    .buttonStyle(FWGhostButtonStyle())
-                } else if item.id == appState.retryableHistoryId {
-                    Button {
-                        appState.retryLastTranscription()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption)
-                    }
-                    .buttonStyle(FWGhostButtonStyle())
-                }
-            }
-            .padding(.vertical, FW.spacing12)
+        HistoryRowView(item: item, retryableHistoryId: appState.retryableHistoryId) {
+            appState.retryLastTranscription()
         }
-        .padding(.horizontal, FW.spacing16)
     }
 
     private var sections: [HistorySection] {
@@ -156,6 +104,89 @@ struct HistoryListView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return formatter
+    }
+}
+
+private struct HistoryRowView: View {
+    let item: TranscriptionSummary
+    let retryableHistoryId: String?
+    let onRetry: () -> Void
+
+    @State private var isHovering = false
+
+    private var timeFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: FW.spacing16) {
+            VStack(alignment: .leading, spacing: FW.spacing4) {
+                Text(timeFormatter.string(from: item.createdAt))
+                    .font(FW.fontMonoSmall)
+                    .foregroundStyle(FW.textTertiary)
+
+                if item.status == .failed {
+                    Text("Failed")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(FW.warning)
+                }
+            }
+            .frame(width: 80, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: FW.spacing8) {
+                if item.status == .success {
+                    Text(item.text)
+                        .font(.subheadline)
+                        .foregroundStyle(FW.textPrimary)
+
+                    #if DEBUG
+                    if isHovering && !item.rawText.isEmpty && item.rawText != item.text {
+                        Text(item.rawText)
+                            .font(.caption)
+                            .foregroundStyle(FW.textTertiary)
+                            .padding(.top, 2)
+                    }
+                    #endif
+                } else {
+                    Text(item.error ?? "Transcription failed")
+                        .font(.subheadline)
+                        .foregroundStyle(FW.textSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, FW.spacing12)
+
+            HStack(spacing: FW.spacing8) {
+                if item.status == .success {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(item.text, forType: .string)
+                        Analytics.shared.track("History Item Copied", eventProperties: [
+                            "text_length": item.text.count
+                        ])
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption)
+                    }
+                    .buttonStyle(FWGhostButtonStyle())
+                } else if item.id == retryableHistoryId {
+                    Button {
+                        onRetry()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(FWGhostButtonStyle())
+                }
+            }
+            .padding(.vertical, FW.spacing12)
+        }
+        .padding(.horizontal, FW.spacing16)
+        .onHover { hovering in
+            isHovering = hovering
+        }
     }
 }
 
