@@ -3,18 +3,14 @@
 // Flow
 //
 // Captures the recording hotkey (Fn key or custom) using a CGEvent tap.
-// Fn defaults to press-and-hold for recording.
-// Custom hotkeys use Carbon's RegisterEventHotKey for global capture.
+// Fn key and modifier-only use press-and-hold for recording.
+// Custom hotkeys (key + modifiers) use toggle mode.
+// All hotkeys are captured via CGEventTap (no Carbon dependency).
 // Requires "Accessibility" permission in System Settings > Privacy & Security.
 //
 
 import ApplicationServices
-import Carbon.HIToolbox
 import Foundation
-
-// Unique signature for our hotkey (arbitrary 4-char code)
-private let kHotkeySignature: FourCharCode = 0x464C_5752 // "FLWR"
-private let kHotkeyID: UInt32 = 1
 
 final class GlobeKeyHandler {
     enum Trigger {
@@ -37,9 +33,10 @@ final class GlobeKeyHandler {
     private var modifierUsedAsModifier = false
     private var pendingModifierTrigger: DispatchWorkItem?
 
-    // Carbon hotkey for custom key combos (works globally)
-    private var carbonHotKeyRef: EventHotKeyRef?
-    private var carbonEventHandler: EventHandlerRef?
+    // Resilience: track tap restarts to avoid infinite loops
+    private var tapRestartCount = 0
+    private let maxTapRestarts = 5
+    private var lastTapRestartTime: Date?
 
     init(hotkey: Hotkey, onHotkeyTriggered: @escaping @Sendable (Trigger) -> Void) {
         self.hotkey = hotkey
@@ -48,7 +45,6 @@ final class GlobeKeyHandler {
     }
 
     deinit {
-        unregisterCarbonHotkey()
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
         }
@@ -58,7 +54,6 @@ final class GlobeKeyHandler {
     }
 
     func updateHotkey(_ hotkey: Hotkey) {
-        let oldKind = self.hotkey.kind
         self.hotkey = hotkey
 
         // Reset state for Fn/modifier-only modes
@@ -70,28 +65,15 @@ final class GlobeKeyHandler {
         modifierUsedAsModifier = false
         pendingModifierTrigger?.cancel()
         pendingModifierTrigger = nil
-
-        // Update Carbon hotkey registration if switching to/from custom
-        if case .custom = oldKind {
-            unregisterCarbonHotkey()
-        }
-        if case .custom(let keyCode, let modifiers, _) = hotkey.kind {
-            registerCarbonHotkey(keyCode: keyCode, modifiers: modifiers)
-        }
     }
 
     @discardableResult
     func startListening(prompt: Bool) -> Bool {
         guard accessibilityTrusted(prompt: prompt) else { return false }
-
-        // Register Carbon hotkey if using custom hotkey
-        if case .custom(let keyCode, let modifiers, _) = hotkey.kind {
-            registerCarbonHotkey(keyCode: keyCode, modifiers: modifiers)
-        }
-
         guard eventTap == nil else { return true }
 
-        // Event tap for Fn key and modifier-only hotkeys (flagsChanged events)
+        // Event tap for all hotkey types: Fn key, modifier-only, and custom key combos
+        // Listen to flagsChanged (modifiers) and keyDown (for custom key+modifier combos)
         let eventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
         guard let eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -109,6 +91,7 @@ final class GlobeKeyHandler {
         self.runLoopSource = runLoopSource
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
+        tapRestartCount = 0
         return true
     }
 
@@ -127,10 +110,9 @@ final class GlobeKeyHandler {
     }
 
     fileprivate func handleEvent(type: CGEventType, event: CGEvent) {
+        // Handle tap being disabled by system (timeout or user input flood)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap {
-                CGEvent.tapEnable(tap: eventTap, enable: true)
-            }
+            restartTapIfNeeded()
             return
         }
 
@@ -142,7 +124,8 @@ final class GlobeKeyHandler {
             case .keyDown:
                 if isFunctionDown {
                     let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-                    if keycode != Int64(kVK_Function) {
+                    // kVK_Function = 63
+                    if keycode != 63 {
                         functionUsedAsModifier = true
                         pendingFnTrigger?.cancel()
                         pendingFnTrigger = nil
@@ -164,10 +147,40 @@ final class GlobeKeyHandler {
             default:
                 break
             }
-        case .custom:
-            // Custom hotkeys are handled by Carbon RegisterEventHotKey (global)
-            break
+        case .custom(let keyCode, let modifiers, _):
+            // Handle custom key+modifier combos via CGEventTap (no Carbon needed)
+            if type == .keyDown {
+                handleCustomKeyDown(event, expectedKeyCode: keyCode, expectedModifiers: modifiers)
+            }
         }
+    }
+
+    private func handleCustomKeyDown(_ event: CGEvent, expectedKeyCode: Int, expectedModifiers: Hotkey.Modifiers) {
+        let pressedKeyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let pressedModifiers = Hotkey.Modifiers.from(cgFlags: event.flags)
+
+        if pressedKeyCode == expectedKeyCode && pressedModifiers == expectedModifiers {
+            fireHotkey(.toggle)
+        }
+    }
+
+    private func restartTapIfNeeded() {
+        guard let eventTap else { return }
+
+        // Rate limit restarts to avoid infinite loops
+        let now = Date()
+        if let lastRestart = lastTapRestartTime, now.timeIntervalSince(lastRestart) < 1.0 {
+            tapRestartCount += 1
+            if tapRestartCount >= maxTapRestarts {
+                // Too many restarts, give up (user may need to check accessibility permissions)
+                return
+            }
+        } else {
+            tapRestartCount = 0
+        }
+        lastTapRestartTime = now
+
+        CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
     private func handleFunctionFlagChange(_ event: CGEvent) {
@@ -260,68 +273,6 @@ final class GlobeKeyHandler {
     private func fireHotkey(_ trigger: Trigger) {
         onHotkeyTriggered?(trigger)
     }
-
-    // MARK: - Carbon Hotkey Registration (for global custom hotkeys)
-
-    private func registerCarbonHotkey(keyCode: Int, modifiers: Hotkey.Modifiers) {
-        unregisterCarbonHotkey()
-
-        // Install event handler if not already installed
-        if carbonEventHandler == nil {
-            var eventType = EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyPressed)
-            )
-
-            let handlerRef = Unmanaged.passUnretained(self).toOpaque()
-            let status = InstallEventHandler(
-                GetApplicationEventTarget(),
-                carbonHotkeyCallback,
-                1,
-                &eventType,
-                handlerRef,
-                &carbonEventHandler
-            )
-
-            if status != noErr {
-                return
-            }
-        }
-
-        // Convert our modifiers to Carbon modifiers
-        var carbonModifiers: UInt32 = 0
-        if modifiers.contains(.command) { carbonModifiers |= UInt32(cmdKey) }
-        if modifiers.contains(.option) { carbonModifiers |= UInt32(optionKey) }
-        if modifiers.contains(.control) { carbonModifiers |= UInt32(controlKey) }
-        if modifiers.contains(.shift) { carbonModifiers |= UInt32(shiftKey) }
-
-        let hotkeyID = EventHotKeyID(signature: kHotkeySignature, id: kHotkeyID)
-        var hotKeyRef: EventHotKeyRef?
-
-        let status = RegisterEventHotKey(
-            UInt32(keyCode),
-            carbonModifiers,
-            hotkeyID,
-            GetApplicationEventTarget(),
-            0,
-            &hotKeyRef
-        )
-
-        if status == noErr {
-            carbonHotKeyRef = hotKeyRef
-        }
-    }
-
-    private func unregisterCarbonHotkey() {
-        if let hotKeyRef = carbonHotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            carbonHotKeyRef = nil
-        }
-    }
-
-    fileprivate func handleCarbonHotkey() {
-        fireHotkey(.toggle)
-    }
 }
 
 private func globeKeyEventTapCallback(
@@ -337,38 +288,4 @@ private func globeKeyEventTapCallback(
     let handler = Unmanaged<GlobeKeyHandler>.fromOpaque(refcon).takeUnretainedValue()
     handler.handleEvent(type: type, event: event)
     return Unmanaged.passUnretained(event)
-}
-
-private func carbonHotkeyCallback(
-    nextHandler: EventHandlerCallRef?,
-    event: EventRef?,
-    userData: UnsafeMutableRawPointer?
-) -> OSStatus {
-    guard let userData, let event else {
-        return OSStatus(eventNotHandledErr)
-    }
-
-    var hotkeyID = EventHotKeyID()
-    let status = GetEventParameter(
-        event,
-        EventParamName(kEventParamDirectObject),
-        EventParamType(typeEventHotKeyID),
-        nil,
-        MemoryLayout<EventHotKeyID>.size,
-        nil,
-        &hotkeyID
-    )
-
-    guard status == noErr,
-          hotkeyID.signature == kHotkeySignature,
-          hotkeyID.id == kHotkeyID else {
-        return OSStatus(eventNotHandledErr)
-    }
-
-    let handler = Unmanaged<GlobeKeyHandler>.fromOpaque(userData).takeUnretainedValue()
-    DispatchQueue.main.async {
-        handler.handleCarbonHotkey()
-    }
-
-    return noErr
 }

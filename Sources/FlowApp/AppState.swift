@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import Carbon.HIToolbox
 import Combine
 import Flow
 import Foundation
@@ -83,6 +82,8 @@ final class AppState: ObservableObject {
     private var mediaPauseState = MediaPauseState()
     private var recordingIndicator: RecordingIndicatorWindow?
     private var targetApplication: NSRunningApplication?
+    private let volumeManager = VolumeManager()
+    private var textFieldContext: TextFieldContext?
 
     private static let onboardingKey = "onboardingComplete"
 
@@ -299,7 +300,7 @@ final class AppState: ObservableObject {
         pendingModifierCapture = nil // Key pressed, cancel any pending modifier capture
 
         let modifiers = Hotkey.Modifiers.from(nsFlags: event.modifierFlags)
-        if event.keyCode == UInt16(kVK_Escape), modifiers.isEmpty {
+        if event.keyCode == UInt16(KeyCode.escape), modifiers.isEmpty {
             endHotkeyCapture()
             return
         }
@@ -435,8 +436,13 @@ final class AppState: ObservableObject {
         }
 
         targetApplication = NSWorkspace.shared.frontmostApplication
+        textFieldContext = AccessibilityContext.extractFocusedTextContext()
+        if let context = textFieldContext?.contextSummary {
+            log("📝 [CONTEXT] Extracted text context:\n\(context)")
+        }
         log("🎤 [RECORDING] Starting recording - App: \(currentApp), Mode: \(currentMode.displayName)")
         pauseMediaPlayback()
+        volumeManager.muteForRecording()
         if engine.startRecording() {
             isRecording = true
             isProcessing = false
@@ -470,6 +476,7 @@ final class AppState: ObservableObject {
             }
         } else {
             errorMessage = engine.lastError ?? "Failed to start recording"
+            volumeManager.restoreAfterRecording()
             resumeMediaPlayback()
         }
     }
@@ -485,6 +492,9 @@ final class AppState: ObservableObject {
 
         let duration = engine.stopRecording()
         isRecording = false
+
+        // Restore volume immediately (was muted to prevent feedback)
+        volumeManager.restoreAfterRecording()
 
         log("⏳ [RESUME] Scheduling music resume in 1.95s...")
         // Wait 1.95s before resuming music to let CoreAudio settle after mic release

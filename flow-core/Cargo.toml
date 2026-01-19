@@ -7,6 +7,10 @@ edition = "2024"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+# ONNX Runtime for Silero VAD (TODO: update to stable v2 when released)
+# ort = { version = "2.0.0-rc.11", default-features = false, features = ["coreml"] }
+ndarray = "0.16"
+
 aho-corasick = "1.1.4"
 async-trait = "0.1.89"
 base64 = "0.22.1"

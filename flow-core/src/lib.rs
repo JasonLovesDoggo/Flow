@@ -16,6 +16,7 @@ pub mod providers;
 pub mod shortcuts;
 pub mod storage;
 pub mod types;
+pub mod vad;
 pub mod voice_commands;
 pub mod whisper_models;
 
