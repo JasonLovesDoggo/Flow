@@ -1,6 +1,8 @@
 # Flow
 
-Flow is a voice dictation app that captures audio, transcribes speech, and formats it into clean text. It supports shortcuts, learning, and tone that adapts per app.
+Flow is a voice dictation app that captures audio, transcribes speech, and formats it into clean text. It supports shortcuts, learning, and tone that adapts per app. 
+
+Effortless Voice Dictation
 
 
 
