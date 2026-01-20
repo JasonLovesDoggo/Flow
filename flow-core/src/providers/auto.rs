@@ -17,7 +17,7 @@ use super::{TranscriptionProvider, TranscriptionRequest, TranscriptionResponse};
 const FLOW_WORKER_URL: &str = "https://flow-worker.test-j.workers.dev";
 const FLOW_WORKER_VALIDATE_URL: &str = "https://flow-worker.test-j.workers.dev/validate-corrections";
 
-/// Base10 transcription provider (with integrated completion)
+/// Auto transcription provider (with integrated completion)
 pub struct AutoTranscriptionProvider {
     client: Client,
 }
@@ -50,7 +50,7 @@ struct ValidateCorrectionsResponse {
     results: Vec<CorrectionValidation>,
 }
 
-/// Validate corrections using AI via the Base10 worker
+/// Validate corrections using AI via the Flow worker
 pub async fn validate_corrections(
     corrections: Vec<CorrectionPair>,
 ) -> Result<Vec<CorrectionValidation>> {
