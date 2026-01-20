@@ -1,0 +1,38 @@
+name: Validate
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate Rust Tests & Swift Build
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flow-core
+
+      - name: Run Rust tests
+        run: |
+          cd flow-core
+          cargo test --lib
+
+      - name: Build Rust library
+        run: |
+          cd flow-core
+          cargo build
+
+      - name: Build Swift package
+        run: |
+          swift build
