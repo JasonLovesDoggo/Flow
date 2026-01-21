@@ -11,6 +11,7 @@
 
 import ApplicationServices
 import Foundation
+import IOKit.pwr_mgt
 
 final class GlobeKeyHandler {
     enum Trigger {
@@ -21,6 +22,8 @@ final class GlobeKeyHandler {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var tapThread: Thread?
+    private var tapRunLoop: CFRunLoop?
     private var onHotkeyTriggered: (@Sendable (Trigger) -> Void)?
     private var hotkey: Hotkey
 
@@ -37,13 +40,21 @@ final class GlobeKeyHandler {
     // Stale state detection: if a key appears held for longer than this, assume we missed the release
     private let staleKeyTimeout: TimeInterval = 5.0
 
-    // Periodic health check to ensure the event tap stays enabled
-    private var tapHealthTimer: Timer?
+    // Health check timer runs on the tap thread (not main) to ensure re-enable works when backgrounded
+    private var tapHealthTimer: CFRunLoopTimer?
 
     // Resilience: track tap restarts to avoid infinite loops
     private var tapRestartCount = 0
     private let maxTapRestarts = 5
     private var lastTapRestartTime: Date?
+
+    // Prevent App Nap from suspending the process while the event tap is running.
+    // App Nap operates at the process level and will suspend all threads (including
+    // our dedicated tap thread), causing the tap callback to timeout and get disabled.
+    private var appNapActivity: NSObjectProtocol?
+
+    // IOKit power assertion - more aggressive than ProcessInfo.beginActivity
+    private var powerAssertionID: IOPMAssertionID = 0
 
     init(hotkey: Hotkey, onHotkeyTriggered: @escaping @Sendable (Trigger) -> Void) {
         self.hotkey = hotkey
@@ -52,13 +63,26 @@ final class GlobeKeyHandler {
     }
 
     deinit {
-        tapHealthTimer?.invalidate()
+        if let timer = tapHealthTimer, let tapRunLoop {
+            CFRunLoopTimerInvalidate(timer)
+            CFRunLoopRemoveTimer(tapRunLoop, timer, .commonModes)
+        }
         tapHealthTimer = nil
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
         }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        if let runLoopSource, let tapRunLoop {
+            CFRunLoopRemoveSource(tapRunLoop, runLoopSource, .commonModes)
+        }
+        if let tapRunLoop {
+            CFRunLoopStop(tapRunLoop)
+        }
+        tapThread?.cancel()
+        if let activity = appNapActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+        }
+        if powerAssertionID != 0 {
+            IOPMAssertionRelease(powerAssertionID)
         }
     }
 
@@ -87,7 +111,7 @@ final class GlobeKeyHandler {
         guard let eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,  // Active tap (not listenOnly) - might have different background permissions
             eventsOfInterest: CGEventMask(eventMask),
             callback: globeKeyEventTapCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -98,28 +122,77 @@ final class GlobeKeyHandler {
         self.eventTap = eventTap
         let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         self.runLoopSource = runLoopSource
-        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        CGEvent.tapEnable(tap: eventTap, enable: true)
         tapRestartCount = 0
 
-        // Start periodic health check to ensure the tap stays enabled
-        // System can disable taps if they're slow or unresponsive
-        // Using 0.5s interval for faster recovery when tap gets disabled
-        tapHealthTimer?.invalidate()
-        tapHealthTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.ensureTapEnabled()
+        // Disable App Nap to keep the event tap responsive when backgrounded.
+        // Without this, App Nap suspends the entire process (all threads), causing
+        // the tap callback to timeout and macOS to disable the tap.
+        // Using .userInitiated (not "AllowingIdleSystemSleep") + .latencyCritical for strongest effect.
+        appNapActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "Monitoring global hotkey"
+        )
+
+        // Also create an IOKit power assertion - this is lower-level and more aggressive.
+        // kIOPMAssertionTypePreventUserIdleSystemSleep prevents system sleep but not display sleep.
+        let assertionName = "Flow: Monitoring global hotkey" as CFString
+        IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            assertionName,
+            &powerAssertionID
+        )
+
+        // Run event tap on a dedicated background thread so it doesn't get
+        // throttled when the app is backgrounded. This prevents macOS from
+        // disabling the tap due to timeout.
+        let thread = Thread { [weak self] in
+            guard let self else { return }
+            let runLoop = CFRunLoopGetCurrent()
+            self.tapRunLoop = runLoop
+            CFRunLoopAddSource(runLoop, runLoopSource, .commonModes)
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+
+            // Health check timer runs ON THIS THREAD (not main) so it works when app is backgrounded.
+            // Main thread timers get throttled, but this thread should stay responsive.
+            let timer = CFRunLoopTimerCreateWithHandler(
+                kCFAllocatorDefault,
+                CFAbsoluteTimeGetCurrent() + 1.0,
+                1.0, // Check every second (more aggressive than before)
+                0,
+                0
+            ) { [weak self] _ in
+                self?.ensureTapEnabledOnTapThread()
+            }
+            if let timer {
+                self.tapHealthTimer = timer
+                CFRunLoopAddTimer(runLoop, timer, .commonModes)
+            }
+
+            // Run the loop forever (until stopped in deinit)
+            CFRunLoopRun()
         }
+        thread.name = "com.flow.hotkey-tap"
+        thread.qualityOfService = .userInteractive
+        self.tapThread = thread
+        thread.start()
 
         return true
     }
 
-    private func ensureTapEnabled() {
-        guard let eventTap else { return }
+    // Called from tap thread's run loop timer.
+    // Uses NSLog instead of print - NSLog goes to syslog and shouldn't block.
+    private func ensureTapEnabledOnTapThread() {
+        guard let eventTap, let runLoopSource, let tapRunLoop else { return }
         if !CGEvent.tapIsEnabled(tap: eventTap) {
-            #if DEBUG
-                print("[HOTKEY] Tap was disabled, re-enabling")
-            #endif
+            // Try removing and re-adding the source, then re-enabling
+            CFRunLoopRemoveSource(tapRunLoop, runLoopSource, .commonModes)
             CGEvent.tapEnable(tap: eventTap, enable: true)
+            CFRunLoopAddSource(tapRunLoop, runLoopSource, .commonModes)
+
+            // Check if it actually worked
+            let nowEnabled = CGEvent.tapIsEnabled(tap: eventTap)
+            NSLog("[HOTKEY] Tap re-enable attempted, now enabled: %d", nowEnabled ? 1 : 0)
         }
     }
 
@@ -140,6 +213,7 @@ final class GlobeKeyHandler {
     fileprivate func handleEvent(type: CGEventType, event: CGEvent) {
         // Handle tap being disabled by system (timeout or user input flood)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            NSLog("[HOTKEY] Tap disabled by system (timeout=%d), restarting", type == .tapDisabledByTimeout ? 1 : 0)
             restartTapIfNeeded()
             return
         }
@@ -157,9 +231,6 @@ final class GlobeKeyHandler {
                     let keycode = event.getIntegerValueField(.keyboardEventKeycode)
                     // kVK_Function = 63
                     if keycode != 63 {
-                        #if DEBUG
-                            print("[HOTKEY] keyDown with Fn held, marking as used")
-                        #endif
                         functionUsedAsModifier = true
                     }
                 }
@@ -175,9 +246,6 @@ final class GlobeKeyHandler {
                 // System events like Cmd+V don't have our modifier flag, so they shouldn't
                 // incorrectly mark the modifier as "used as a combo key".
                 if isModifierDown, event.flags.contains(modifier.cgFlag) {
-                    #if DEBUG
-                        print("[HOTKEY] keyDown with modifier held, marking as used")
-                    #endif
                     modifierUsedAsModifier = true
                 }
             default:
@@ -222,18 +290,11 @@ final class GlobeKeyHandler {
     private func handleFunctionFlagChange(_ event: CGEvent) {
         let hasFn = event.flags.contains(.maskSecondaryFn)
 
-        #if DEBUG
-            print("[HOTKEY] Fn flagsChanged: hasFn=\(hasFn), isFunctionDown=\(isFunctionDown)")
-        #endif
-
         // Detect and recover from stale state: if we think the key is held but it's been
         // too long, we probably missed the release event (tap was disabled, run loop blocked, etc.)
         if isFunctionDown, let pressTime = fnPressTime,
            Date().timeIntervalSince(pressTime) > staleKeyTimeout
         {
-            #if DEBUG
-                print("[HOTKEY] Fn stale state detected, resetting")
-            #endif
             isFunctionDown = false
             hasFiredFnPressed = false
             functionUsedAsModifier = false
@@ -265,18 +326,11 @@ final class GlobeKeyHandler {
     private func handleModifierFlagChange(_ event: CGEvent, modifier: Hotkey.ModifierKey) {
         let hasModifier = event.flags.contains(modifier.cgFlag)
 
-        #if DEBUG
-            print("[HOTKEY] Modifier flagsChanged: hasModifier=\(hasModifier), isModifierDown=\(isModifierDown)")
-        #endif
-
         // Detect and recover from stale state: if we think the key is held but it's been
         // too long, we probably missed the release event (tap was disabled, run loop blocked, etc.)
         if isModifierDown, let pressTime = modifierPressTime,
            Date().timeIntervalSince(pressTime) > staleKeyTimeout
         {
-            #if DEBUG
-                print("[HOTKEY] Modifier stale state detected, resetting")
-            #endif
             isModifierDown = false
             hasFiredModifierPressed = false
             modifierUsedAsModifier = false
@@ -336,7 +390,11 @@ final class GlobeKeyHandler {
     }
 
     private func fireHotkey(_ trigger: Trigger) {
-        onHotkeyTriggered?(trigger)
+        // Dispatch to main thread since the tap runs on a background thread
+        // and the callback updates UI state
+        DispatchQueue.main.async { [weak self] in
+            self?.onHotkeyTriggered?(trigger)
+        }
     }
 }
 

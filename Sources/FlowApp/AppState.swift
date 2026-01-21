@@ -73,7 +73,8 @@ final class AppState: ObservableObject {
     private var recordingTimer: Timer?
     private var audioLevelTimer: Timer?
     private var modelLoadingTimer: Timer?
-    private var globeKeyHandler: GlobeKeyHandler?
+    private var helperManager: HelperManager?
+    private var globeKeyHandler: GlobeKeyHandler? // Fallback if helper unavailable
     private var hotkeyCaptureMonitor: Any?
     private var hotkeyFlagsMonitor: Any?
     private var pendingModifierCapture: Hotkey.ModifierKey?
@@ -129,6 +130,9 @@ final class AppState: ObservableObject {
         audioLevelTimer = nil
         modelLoadingTimer?.invalidate()
         modelLoadingTimer = nil
+        helperManager?.stop()
+        helperManager = nil
+        globeKeyHandler = nil
         endHotkeyCapture()
         recordingIndicator?.hide()
     }
@@ -136,8 +140,31 @@ final class AppState: ObservableObject {
     // MARK: - Globe Key
 
     private func setupGlobeKey() {
+        // Use HelperManager as primary (immune to App Nap)
+        helperManager = HelperManager()
+        helperManager?.onHotkeyTriggered = { [weak self] trigger in
+            let globeTrigger: GlobeKeyHandler.Trigger = switch trigger {
+            case .pressed: .pressed
+            case .released: .released
+            case .toggle: .toggle
+            }
+            self?.handleHotkeyTrigger(globeTrigger)
+        }
+        helperManager?.onError = { [weak self] message in
+            self?.log("Helper error: \(message), falling back to GlobeKeyHandler")
+            self?.setupFallbackGlobeKey()
+        }
+        helperManager?.updateHotkey(hotkey)
+        helperManager?.start()
+
+        // Also setup GlobeKeyHandler as fallback (runs in-process)
+        // This provides immediate functionality while helper starts
+        setupFallbackGlobeKey()
+    }
+
+    private func setupFallbackGlobeKey() {
+        guard globeKeyHandler == nil else { return }
         globeKeyHandler = GlobeKeyHandler(hotkey: hotkey) { [weak self] trigger in
-            // CGEventTap callback is already on main thread; avoid Task overhead for instant response
             DispatchQueue.main.async {
                 self?.handleHotkeyTrigger(trigger)
             }
@@ -199,6 +226,7 @@ final class AppState: ObservableObject {
     func setHotkey(_ hotkey: Hotkey) {
         self.hotkey = hotkey
         hotkey.save()
+        helperManager?.updateHotkey(hotkey)
         globeKeyHandler?.updateHotkey(hotkey)
 
         var properties: [String: Any] = [
@@ -226,6 +254,8 @@ final class AppState: ObservableObject {
         if started {
             isAccessibilityEnabled = true
             Analytics.shared.track("Accessibility Permission Granted")
+            // Restart helper now that we have permission
+            restartHelperIfNeeded()
         } else {
             refreshAccessibilityStatus()
         }
@@ -238,6 +268,7 @@ final class AppState: ObservableObject {
 
         if !wasEnabled, enabled {
             Analytics.shared.track("Accessibility Permission Granted")
+            restartHelperIfNeeded()
         } else if wasEnabled, !enabled {
             Analytics.shared.track("Accessibility Permission Revoked")
         }
@@ -245,6 +276,12 @@ final class AppState: ObservableObject {
         if enabled {
             _ = globeKeyHandler?.startListening(prompt: false)
         }
+    }
+
+    private func restartHelperIfNeeded() {
+        guard let manager = helperManager, !manager.isRunning else { return }
+        log("Restarting helper after accessibility permission granted")
+        manager.start()
     }
 
     func clearError() {
