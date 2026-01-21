@@ -15,7 +15,7 @@ struct SettingsContentView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: FW.spacing24) {
+            LazyVStack(alignment: .leading, spacing: FW.spacing24) {
                 Text("Settings")
                     .font(.title.weight(.bold))
                     .foregroundStyle(FW.textPrimary)

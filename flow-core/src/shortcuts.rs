@@ -5,7 +5,6 @@
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use tracing::debug;
 
 use crate::error::Result;
@@ -18,8 +17,6 @@ pub struct ShortcutsEngine {
     automaton: RwLock<Option<AhoCorasick>>,
     /// Map from pattern index to shortcut
     shortcuts: RwLock<Vec<Shortcut>>,
-    /// Quick lookup by trigger
-    trigger_map: RwLock<HashMap<String, usize>>,
 }
 
 impl ShortcutsEngine {
@@ -28,7 +25,6 @@ impl ShortcutsEngine {
         Self {
             automaton: RwLock::new(None),
             shortcuts: RwLock::new(Vec::new()),
-            trigger_map: RwLock::new(HashMap::new()),
         }
     }
 
@@ -40,95 +36,72 @@ impl ShortcutsEngine {
         Ok(engine)
     }
 
-    /// Load shortcuts and rebuild the automaton
-    pub fn load_shortcuts(&self, shortcuts: Vec<Shortcut>) {
-        let patterns: Vec<String> = shortcuts
-            .iter()
-            .map(|s| {
-                if s.case_sensitive {
-                    s.trigger.clone()
-                } else {
-                    s.trigger.to_lowercase()
-                }
-            })
-            .collect();
-
-        let automaton = if patterns.is_empty() {
+    /// Build automaton from patterns - extracted helper to avoid duplication
+    #[inline]
+    fn build_automaton(patterns: &[String]) -> Option<AhoCorasick> {
+        if patterns.is_empty() {
             None
         } else {
             AhoCorasickBuilder::new()
                 .match_kind(MatchKind::LeftmostLongest)
-                .build(&patterns)
+                .build(patterns)
                 .ok()
-        };
+        }
+    }
 
-        let trigger_map: HashMap<String, usize> = shortcuts
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.trigger.to_lowercase(), i))
-            .collect();
+    /// Extract patterns from shortcuts with pre-allocated capacity
+    #[inline]
+    fn extract_patterns(shortcuts: &[Shortcut]) -> Vec<String> {
+        let mut patterns = Vec::with_capacity(shortcuts.len());
+        for s in shortcuts {
+            patterns.push(if s.case_sensitive {
+                s.trigger.clone()
+            } else {
+                s.trigger.to_lowercase()
+            });
+        }
+        patterns
+    }
+
+    /// Load shortcuts and rebuild the automaton
+    pub fn load_shortcuts(&self, shortcuts: Vec<Shortcut>) {
+        let patterns = Self::extract_patterns(&shortcuts);
+        let automaton = Self::build_automaton(&patterns);
+        let count = shortcuts.len();
 
         *self.automaton.write() = automaton;
         *self.shortcuts.write() = shortcuts;
-        *self.trigger_map.write() = trigger_map;
 
-        debug!(
-            "Loaded {} shortcuts into engine",
-            self.shortcuts.read().len()
-        );
+        debug!("Loaded {} shortcuts into engine", count);
     }
 
     /// Add a single shortcut
     pub fn add_shortcut(&self, shortcut: Shortcut) {
-        let mut shortcuts = self.shortcuts.write();
-        shortcuts.push(shortcut);
-        drop(shortcuts);
+        {
+            let mut shortcuts = self.shortcuts.write();
+            shortcuts.push(shortcut);
+        }
         self.rebuild_automaton();
     }
 
     /// Remove a shortcut by trigger
     pub fn remove_shortcut(&self, trigger: &str) {
         let trigger_lower = trigger.to_lowercase();
-        let mut shortcuts = self.shortcuts.write();
-        shortcuts.retain(|s| s.trigger.to_lowercase() != trigger_lower);
-        drop(shortcuts);
+        {
+            let mut shortcuts = self.shortcuts.write();
+            shortcuts.retain(|s| s.trigger.to_lowercase() != trigger_lower);
+        }
         self.rebuild_automaton();
     }
 
     /// Rebuild the automaton from current shortcuts
     fn rebuild_automaton(&self) {
-        let shortcuts = self.shortcuts.read();
-
-        let patterns: Vec<String> = shortcuts
-            .iter()
-            .map(|s| {
-                if s.case_sensitive {
-                    s.trigger.clone()
-                } else {
-                    s.trigger.to_lowercase()
-                }
-            })
-            .collect();
-
-        let automaton = if patterns.is_empty() {
-            None
-        } else {
-            AhoCorasickBuilder::new()
-                .match_kind(MatchKind::LeftmostLongest)
-                .build(&patterns)
-                .ok()
+        let patterns = {
+            let shortcuts = self.shortcuts.read();
+            Self::extract_patterns(&shortcuts)
         };
-
-        let trigger_map: HashMap<String, usize> = shortcuts
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.trigger.to_lowercase(), i))
-            .collect();
-
-        drop(shortcuts);
-
+        let automaton = Self::build_automaton(&patterns);
         *self.automaton.write() = automaton;
-        *self.trigger_map.write() = trigger_map;
     }
 
     /// Process text and expand all shortcuts
@@ -144,18 +117,21 @@ impl ShortcutsEngine {
         // work with lowercase for matching but preserve original positions
         let text_lower = text.to_lowercase();
 
-        // find all matches
-        let matches: Vec<_> = ac.find_iter(&text_lower).collect();
+        // use iterator without collecting first for potential early exit
+        let mut matches_iter = ac.find_iter(&text_lower).peekable();
 
-        if matches.is_empty() {
+        // early return if no matches
+        if matches_iter.peek().is_none() {
             return (text.to_string(), Vec::new());
         }
 
-        let mut triggered = Vec::new();
-        let mut result = String::with_capacity(text.len());
+        // pre-allocate with reasonable capacity estimate
+        let mut triggered = Vec::with_capacity(4);
+        // estimate output size: original length + some extra for replacements
+        let mut result = String::with_capacity(text.len() + text.len() / 4);
         let mut last_end = 0;
 
-        for m in &matches {
+        for m in matches_iter {
             let shortcut = &shortcuts[m.pattern().as_usize()];
 
             // add text before this match
@@ -182,12 +158,13 @@ impl ShortcutsEngine {
     }
 
     /// Check if text contains any shortcuts
+    #[inline]
     pub fn contains_shortcuts(&self, text: &str) -> bool {
         let automaton = self.automaton.read();
-        let Some(ref ac) = *automaton else {
-            return false;
-        };
-        ac.is_match(&text.to_lowercase())
+        match *automaton {
+            Some(ref ac) => ac.is_match(&text.to_lowercase()),
+            None => false,
+        }
     }
 
     /// Get all shortcuts
@@ -196,6 +173,7 @@ impl ShortcutsEngine {
     }
 
     /// Get shortcut count
+    #[inline]
     pub fn count(&self) -> usize {
         self.shortcuts.read().len()
     }

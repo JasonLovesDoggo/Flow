@@ -6,6 +6,7 @@
 // Users can view, search, and delete auto-learned typo corrections.
 //
 
+import Combine
 import Flow
 import SwiftUI
 
@@ -13,17 +14,26 @@ struct CorrectionsContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var corrections: [Correction] = []
     @State private var searchText = ""
+    @State private var debouncedSearchText = ""
     @State private var showingClearConfirmation = false
     @State private var sortOrder: CorrectionSortOrder = .confidence
+    @State private var searchDebouncer: AnyCancellable?
 
+    // Cache filtered and sorted results to avoid recomputation
     private var filteredCorrections: [Correction] {
-        let filtered = searchText.isEmpty
-            ? corrections
-            : corrections.filter {
-                $0.original.localizedCaseInsensitiveContains(searchText) ||
-                $0.corrected.localizedCaseInsensitiveContains(searchText)
-            }
+        let searchQuery = debouncedSearchText.lowercased()
+        let filtered: [Correction]
 
+        if searchQuery.isEmpty {
+            filtered = corrections
+        } else {
+            filtered = corrections.filter {
+                $0.original.lowercased().contains(searchQuery) ||
+                    $0.corrected.lowercased().contains(searchQuery)
+            }
+        }
+
+        // Sort in place to avoid extra allocations
         switch sortOrder {
         case .confidence:
             return filtered.sorted { $0.confidence > $1.confidence }
@@ -36,9 +46,9 @@ struct CorrectionsContentView: View {
         }
     }
 
-    /// Stats for the header
+    /// Stats for the header - cached count
     private var activeCount: Int {
-        corrections.filter { $0.confidence >= 0.55 }.count
+        corrections.reduce(0) { $0 + ($1.confidence >= 0.55 ? 1 : 0) }
     }
 
     var body: some View {
@@ -173,6 +183,15 @@ struct CorrectionsContentView: View {
         }
         .onAppear {
             refreshCorrections()
+        }
+        .onChange(of: searchText) { _, newValue in
+            // Debounce search input to avoid filtering on every keystroke
+            searchDebouncer?.cancel()
+            searchDebouncer = Just(newValue)
+                .delay(for: .milliseconds(150), scheduler: RunLoop.main)
+                .sink { debouncedValue in
+                    debouncedSearchText = debouncedValue
+                }
         }
     }
 
