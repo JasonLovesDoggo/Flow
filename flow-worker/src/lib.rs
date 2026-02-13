@@ -285,7 +285,7 @@ async fn call_base10(
 
     let mut response = Fetch::Request(upstream).send().await?;
 
-    if !response.status_code().to_string().starts_with('2') {
+    if !(200..300).contains(&response.status_code()) {
         let error_text = response.text().await.unwrap_or_default();
         return Err(worker::Error::RustError(format!(
             "Base10 error {}: {}",
@@ -454,7 +454,7 @@ async fn call_openrouter_instruction(env: &Env, instruction: &str) -> Result<Str
     let upstream = Request::new_with_init(OPENROUTER_API_URL, &init)?;
     let mut response = Fetch::Request(upstream).send().await?;
 
-    if !response.status_code().to_string().starts_with('2') {
+    if !(200..300).contains(&response.status_code()) {
         let error_text = response.text().await.unwrap_or_default();
         return Err(worker::Error::RustError(format!(
             "OpenRouter error {}: {}",
@@ -529,7 +529,7 @@ async fn call_openrouter(
     let upstream = Request::new_with_init(OPENROUTER_API_URL, &init)?;
     let mut response = Fetch::Request(upstream).send().await?;
 
-    if !response.status_code().to_string().starts_with('2') {
+    if !(200..300).contains(&response.status_code()) {
         let error_text = response.text().await.unwrap_or_default();
         return Err(worker::Error::RustError(format!(
             "OpenRouter error {}: {}",
@@ -628,7 +628,7 @@ async fn extract_proper_nouns(env: &Env, potential_words: &str) -> Result<String
     let upstream = Request::new_with_init(OPENROUTER_API_URL, &init)?;
     let mut response = Fetch::Request(upstream).send().await?;
 
-    if !response.status_code().to_string().starts_with('2') {
+    if !(200..300).contains(&response.status_code()) {
         let error_text = response.text().await.unwrap_or_default();
         return Err(worker::Error::RustError(format!(
             "OpenRouter error {}: {}",
@@ -752,7 +752,7 @@ async fn validate_corrections(
     let upstream = Request::new_with_init(OPENROUTER_API_URL, &init)?;
     let mut response = Fetch::Request(upstream).send().await?;
 
-    if !response.status_code().to_string().starts_with('2') {
+    if !(200..300).contains(&response.status_code()) {
         let error_text = response.text().await.unwrap_or_default();
         return Err(worker::Error::RustError(format!(
             "OpenRouter error {}: {}",

@@ -151,24 +151,10 @@ final class AppState: ObservableObject {
             self?.handleHotkeyTrigger(globeTrigger)
         }
         helperManager?.onError = { [weak self] message in
-            self?.log("Helper error: \(message), falling back to GlobeKeyHandler")
-            self?.setupFallbackGlobeKey()
+            self?.log("Helper error: \(message)")
         }
         helperManager?.updateHotkey(hotkey)
         helperManager?.start()
-
-        // Also setup GlobeKeyHandler as fallback (runs in-process)
-        // This provides immediate functionality while helper starts
-        setupFallbackGlobeKey()
-    }
-
-    private func setupFallbackGlobeKey() {
-        guard globeKeyHandler == nil else { return }
-        globeKeyHandler = GlobeKeyHandler(hotkey: hotkey) { [weak self] trigger in
-            DispatchQueue.main.async {
-                self?.handleHotkeyTrigger(trigger)
-            }
-        }
     }
 
     private func handleHotkeyTrigger(_ trigger: GlobeKeyHandler.Trigger) {

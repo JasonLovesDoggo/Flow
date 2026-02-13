@@ -35,6 +35,11 @@ fn main() {
         panic!("cbindgen generation failed");
     }
 
+    // Only re-run cbindgen when FFI-relevant files change
+    println!("cargo:rerun-if-changed=src/ffi.rs");
+    println!("cargo:rerun-if-changed=src/types.rs");
+    println!("cargo:rerun-if-changed=cbindgen.toml");
+
     println!(
         "cargo:warning=Generated C header: {}",
         output_file.display()

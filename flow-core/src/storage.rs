@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -24,7 +24,6 @@ pub const SETTING_OPENAI_API_KEY: &str = "openai_api_key";
 pub const SETTING_GEMINI_API_KEY: &str = "gemini_api_key";
 pub const SETTING_ANTHROPIC_API_KEY: &str = "anthropic_api_key";
 pub const SETTING_OPENROUTER_API_KEY: &str = "openrouter_api_key";
-pub const SETTING_BASE10_API_KEY: &str = "base10_api_key";
 pub const SETTING_COMPLETION_PROVIDER: &str = "completion_provider";
 pub const SETTING_USE_LOCAL_TRANSCRIPTION: &str = "use_local_transcription";
 pub const SETTING_LOCAL_WHISPER_MODEL: &str = "local_whisper_model";
@@ -67,8 +66,7 @@ impl Storage {
                 }
             }
             Err(e) => {
-                warn!("Migration error (may be benign): {}", e);
-                // Continue anyway - migrations are designed to be idempotent
+                return Err(crate::error::Error::Storage(e));
             }
         }
 
@@ -931,18 +929,20 @@ impl Storage {
                     let updated_at: String = row.get(7)?;
 
                     Ok(Contact {
-                        id: Uuid::parse_str(&id).unwrap(),
+                        id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
                         name: row.get(1)?,
                         organization: row.get(2)?,
                         category: parse_contact_category(&row.get::<_, String>(3)?),
                         frequency: row.get::<_, i64>(4)? as u32,
                         last_contacted: last_contacted.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))),
                         created_at: DateTime::parse_from_rfc3339(&created_at)
-                            .unwrap()
-                            .with_timezone(&Utc),
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now),
                         updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                            .unwrap()
-                            .with_timezone(&Utc),
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now),
                     })
                 },
             )
@@ -968,7 +968,7 @@ impl Storage {
                 let updated_at: String = row.get(7)?;
 
                 Ok(Contact {
-                    id: Uuid::parse_str(&id).unwrap(),
+                    id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
                     name: row.get(1)?,
                     organization: row.get(2)?,
                     category: parse_contact_category(&row.get::<_, String>(3)?),
@@ -979,11 +979,13 @@ impl Storage {
                             .map(|dt| dt.with_timezone(&Utc))
                     }),
                     created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
                     updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1008,7 +1010,7 @@ impl Storage {
                 let updated_at: String = row.get(7)?;
 
                 Ok(Contact {
-                    id: Uuid::parse_str(&id).unwrap(),
+                    id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
                     name: row.get(1)?,
                     organization: row.get(2)?,
                     category: parse_contact_category(&row.get::<_, String>(3)?),
@@ -1019,11 +1021,13 @@ impl Storage {
                             .map(|dt| dt.with_timezone(&Utc))
                     }),
                     created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
                     updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

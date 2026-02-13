@@ -23,6 +23,8 @@ final class HelperManager {
     private var outputBuffer = Data()
     private var isReady = false
     private var pendingHotkey: Hotkey?
+    private var restartCount = 0
+    private let maxRestarts = 5
 
     var onHotkeyTriggered: ((Trigger) -> Void)?
     var onReady: (() -> Void)?
@@ -248,6 +250,7 @@ final class HelperManager {
     private func handleReady() {
         log("Helper ready")
         isReady = true
+        restartCount = 0
 
         // Send any pending hotkey config
         if let hotkey = pendingHotkey {
@@ -262,9 +265,16 @@ final class HelperManager {
         log("Helper terminated unexpectedly")
         cleanup()
 
+        restartCount += 1
+        if restartCount > maxRestarts {
+            log("Helper exceeded max restarts (\(maxRestarts)), giving up")
+            onError?("Helper crashed too many times")
+            return
+        }
+
         // Auto-restart after a delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.log("Auto-restarting helper")
+            self?.log("Auto-restarting helper (attempt \(self?.restartCount ?? 0)/\(self?.maxRestarts ?? 0))")
             self?.start()
         }
     }

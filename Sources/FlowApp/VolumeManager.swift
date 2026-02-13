@@ -12,7 +12,6 @@ import Foundation
 
 final class VolumeManager {
     private var wasMutedBeforeRecording = false
-    private var previousVolume: Float32 = 0.0
     private var isCurrentlyMuting = false
 
     // MARK: - Public API
@@ -23,7 +22,6 @@ final class VolumeManager {
 
         // Save current state before muting
         wasMutedBeforeRecording = isMuted()
-        previousVolume = getVolume()
 
         // Mute the system
         if !wasMutedBeforeRecording {
@@ -103,21 +101,4 @@ final class VolumeManager {
         AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &value)
     }
 
-    private func getVolume() -> Float32 {
-        guard let deviceID = getDefaultOutputDevice() else { return 0.0 }
-
-        var volume: Float32 = 0.0
-        var size = UInt32(MemoryLayout<Float32>.size)
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
-        guard status == noErr else { return 0.0 }
-
-        return volume
-    }
 }

@@ -633,7 +633,7 @@ fn transcribe_with_audio(
             "📝 [RUST] Auto-rewriting disabled - returning text with shortcuts only: {} chars",
             text_with_shortcuts.len()
         );
-        text_with_shortcuts.clone()
+        text_with_shortcuts
     } else if let Some(completed_text) = transcription.completed_text {
         // Worker completion available (cloud mode with auto-rewriting)
         log_with_time!(
@@ -2291,6 +2291,10 @@ pub extern "C" fn flow_save_edit_analytics(
     edited_text: *const c_char,
 ) -> bool {
     let handle = unsafe { &*handle };
+
+    if word_edit_vector.is_null() {
+        return false;
+    }
 
     let word_vec = match unsafe { CStr::from_ptr(word_edit_vector) }.to_str() {
         Ok(s) => s,
