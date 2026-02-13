@@ -8,6 +8,22 @@
 import Flow
 import SwiftUI
 
+// MARK: - Static formatters to avoid recreation on every render
+private enum HistoryFormatters {
+    static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+}
+
 struct HistoryListView: View {
     @EnvironmentObject var appState: AppState
 
@@ -17,29 +33,11 @@ struct HistoryListView: View {
                 emptyState
             } else {
                 ForEach(sections) { section in
-                    VStack(alignment: .leading, spacing: FW.spacing12) {
-                        Text(section.title.uppercased())
-                            .font(FW.fontMonoSmall)
-                            .foregroundStyle(FW.textTertiary)
-
-                        VStack(spacing: 0) {
-                            ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                                historyRow(item)
-                                if index < section.items.count - 1 {
-                                    Divider()
-                                        .padding(.leading, 72)
-                                }
-                            }
-                        }
-                        .background {
-                            RoundedRectangle(cornerRadius: FW.radiusMedium)
-                                .fill(FW.surface)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: FW.radiusMedium)
-                                        .strokeBorder(FW.border, lineWidth: 1)
-                                }
-                        }
-                    }
+                    HistorySectionView(
+                        section: section,
+                        retryableHistoryId: appState.retryableHistoryId,
+                        onRetry: appState.retryLastTranscription
+                    )
                 }
             }
         }
@@ -66,12 +64,6 @@ struct HistoryListView: View {
         .fwCard()
     }
 
-    private func historyRow(_ item: TranscriptionSummary) -> some View {
-        HistoryRowView(item: item, retryableHistoryId: appState.retryableHistoryId) {
-            appState.retryLastTranscription()
-        }
-    }
-
     private var sections: [HistorySection] {
         let calendar = Calendar.current
         let grouped = Dictionary(grouping: appState.history) { item in
@@ -86,19 +78,49 @@ struct HistoryListView: View {
                 } else if calendar.isDateInYesterday(date) {
                     title = "Yesterday"
                 } else {
-                    title = dateFormatter.string(from: date)
+                    title = HistoryFormatters.dateFormatter.string(from: date)
                 }
 
                 return HistorySection(title: title, items: items.sorted { $0.createdAt > $1.createdAt })
             }
             .sorted { $0.sortDate > $1.sortDate }
     }
+}
 
-    private var dateFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
+// MARK: - Extracted section view for better view diffing
+private struct HistorySectionView: View {
+    let section: HistorySection
+    let retryableHistoryId: String?
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FW.spacing12) {
+            Text(section.title.uppercased())
+                .font(FW.fontMonoSmall)
+                .foregroundStyle(FW.textTertiary)
+
+            VStack(spacing: 0) {
+                ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
+                    HistoryRowView(
+                        item: item,
+                        retryableHistoryId: retryableHistoryId,
+                        onRetry: onRetry
+                    )
+                    if index < section.items.count - 1 {
+                        Divider()
+                            .padding(.leading, 72)
+                    }
+                }
+            }
+            .background {
+                RoundedRectangle(cornerRadius: FW.radiusMedium)
+                    .fill(FW.surface)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: FW.radiusMedium)
+                            .strokeBorder(FW.border, lineWidth: 1)
+                    }
+            }
+        }
     }
 }
 
@@ -110,16 +132,10 @@ private struct HistoryRowView: View {
     @State private var isHovering = false
     @State private var showCopied = false
 
-    private var timeFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: FW.spacing12) {
             // Time column - fixed width, top aligned
-            Text(timeFormatter.string(from: item.createdAt))
+            Text(HistoryFormatters.timeFormatter.string(from: item.createdAt))
                 .font(FW.fontMonoSmall)
                 .foregroundStyle(FW.textMuted)
                 .frame(width: 48, alignment: .trailing)
