@@ -170,21 +170,27 @@ impl LearningEngine {
         let min_conf = self.min_confidence;
 
         for (i, word) in words.iter().enumerate() {
-            let word_lower = word.to_lowercase();
+            // Strip surrounding punctuation so "teh," matches "teh"
+            let (prefix, core, suffix) = strip_punctuation(word);
+            let core_lower = core.to_lowercase();
 
-            if let Some(correction) = cache.get(&word_lower) {
+            if let Some(correction) = cache.get(&core_lower) {
                 if correction.confidence >= min_conf {
-                    // preserve case pattern if possible
-                    let corrected = match_case(&correction.corrected, word);
+                    let corrected = match_case(&correction.corrected, core);
 
                     applied.push(AppliedCorrection {
-                        original: word.to_string(),
+                        original: core.to_string(),
                         corrected: corrected.clone(),
                         confidence: correction.confidence,
                         position: i,
                     });
 
-                    result_words.push(corrected);
+                    // Reattach any surrounding punctuation
+                    let mut full = String::with_capacity(prefix.len() + corrected.len() + suffix.len());
+                    full.push_str(prefix);
+                    full.push_str(&corrected);
+                    full.push_str(suffix);
+                    result_words.push(full);
                     continue;
                 }
             }
@@ -342,6 +348,20 @@ fn align_words<'a>(original: &[&'a str], edited: &[&'a str]) -> Vec<(&'a str, &'
     }
 
     pairs
+}
+
+/// Split a word into (leading_punctuation, core_word, trailing_punctuation).
+/// e.g. "\"teh,\"" -> ("\"", "teh", ",\"")
+#[inline]
+fn strip_punctuation(word: &str) -> (&str, &str, &str) {
+    let start = word
+        .find(|c: char| c.is_alphanumeric())
+        .unwrap_or(word.len());
+    let end = word
+        .rfind(|c: char| c.is_alphanumeric())
+        .map(|i| i + word[i..].chars().next().map_or(0, char::len_utf8))
+        .unwrap_or(start);
+    (&word[..start], &word[start..end], &word[end..])
 }
 
 /// Try to match the case pattern of the original word
@@ -914,8 +934,6 @@ mod tests {
 
     #[test]
     fn test_correction_with_punctuation_adjacent() {
-        // BUG EXPOSURE: The current implementation splits on whitespace
-        // so "teh," would not match "teh" - this test documents this behavior
         let engine = LearningEngine::new();
         {
             let mut cache = engine.corrections.write();
@@ -928,10 +946,8 @@ mod tests {
             );
         }
 
-        // Note: "teh," includes the comma, so it won't match "teh"
         let (result, applied) = engine.apply_corrections("I saw teh, cat");
-        // This exposes that punctuation attached to words breaks correction
-        assert_eq!(result, "I saw teh, cat"); // BUG: should ideally be "I saw the, cat"
-        assert_eq!(applied.len(), 0); // No corrections applied because "teh," != "teh"
+        assert_eq!(result, "I saw the, cat");
+        assert_eq!(applied.len(), 1);
     }
 }

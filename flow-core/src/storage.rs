@@ -454,32 +454,14 @@ impl Storage {
     pub fn save_correction(&self, correction: &Correction) -> Result<()> {
         let conn = self.conn.lock();
 
-        // Check if correction already exists and get current occurrences
-        let existing: Option<i64> = conn
-            .query_row(
-                "SELECT occurrences FROM corrections WHERE original = ?1 AND corrected = ?2",
-                params![&correction.original, &correction.corrected],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        let (occurrences, confidence) = if let Some(current_occurrences) = existing {
-            // Existing correction: increment and recalculate confidence
-            let new_occurrences = current_occurrences + 1;
-            let confidence = Self::calculate_confidence(new_occurrences as u32);
-            (new_occurrences, confidence)
-        } else {
-            // New correction: use initial occurrences and calculate confidence
-            let confidence = Self::calculate_confidence(correction.occurrences);
-            (correction.occurrences as i64, confidence)
-        };
+        let initial_confidence = Self::calculate_confidence(correction.occurrences);
 
         conn.execute(
             r#"
             INSERT INTO corrections (id, original, corrected, occurrences, confidence, source, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ON CONFLICT(original, corrected) DO UPDATE SET
-                occurrences = ?4,
+                occurrences = corrections.occurrences + 1,
                 confidence = ?5,
                 updated_at = ?8
             "#,
@@ -487,17 +469,33 @@ impl Storage {
                 correction.id.to_string(),
                 correction.original,
                 correction.corrected,
-                occurrences,
-                confidence,
+                correction.occurrences as i64,
+                initial_confidence,
                 format!("{:?}", correction.source),
                 correction.created_at.to_rfc3339(),
                 correction.updated_at.to_rfc3339(),
             ],
         )?;
-        debug!(
-            "Saved correction {} -> {} (occurrences: {}, confidence: {:.2})",
-            correction.original, correction.corrected, occurrences, confidence
-        );
+
+        // Re-read to get the actual occurrences (may have been incremented) and update confidence
+        if let Some((actual_occurrences,)) = conn
+            .query_row(
+                "SELECT occurrences FROM corrections WHERE original = ?1 AND corrected = ?2",
+                params![&correction.original, &correction.corrected],
+                |row| Ok((row.get::<_, i64>(0)?,)),
+            )
+            .optional()?
+        {
+            let actual_confidence = Self::calculate_confidence(actual_occurrences as u32);
+            conn.execute(
+                "UPDATE corrections SET confidence = ?1 WHERE original = ?2 AND corrected = ?3",
+                params![actual_confidence, &correction.original, &correction.corrected],
+            )?;
+            debug!(
+                "Saved correction {} -> {} (occurrences: {}, confidence: {:.2})",
+                correction.original, correction.corrected, actual_occurrences, actual_confidence
+            );
+        }
         Ok(())
     }
 
