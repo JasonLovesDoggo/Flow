@@ -19,26 +19,14 @@ struct CorrectionsContentView: View {
     @State private var sortOrder: CorrectionSortOrder = .confidence
     @State private var searchDebouncer: AnyCancellable?
 
-    // Cache filtered and sorted results to avoid recomputation
     private var filteredCorrections: [Correction] {
-        let filtered = searchText.isEmpty
+        let filtered = debouncedSearchText.isEmpty
             ? corrections
             : corrections.filter {
-                $0.original.localizedCaseInsensitiveContains(searchText) ||
-                    $0.corrected.localizedCaseInsensitiveContains(searchText)
-        let searchQuery = debouncedSearchText.lowercased()
-        let filtered: [Correction]
-
-        if searchQuery.isEmpty {
-            filtered = corrections
-        } else {
-            filtered = corrections.filter {
-                $0.original.lowercased().contains(searchQuery) ||
-                    $0.corrected.lowercased().contains(searchQuery)
+                $0.original.localizedCaseInsensitiveContains(debouncedSearchText) ||
+                $0.corrected.localizedCaseInsensitiveContains(debouncedSearchText)
             }
-        }
 
-        // Sort in place to avoid extra allocations
         switch sortOrder {
         case .confidence:
             return filtered.sorted { $0.confidence > $1.confidence }
@@ -51,9 +39,9 @@ struct CorrectionsContentView: View {
         }
     }
 
-    /// Stats for the header - cached count
+    /// Stats for the header
     private var activeCount: Int {
-        corrections.reduce(0) { $0 + ($1.confidence >= 0.55 ? 1 : 0) }
+        corrections.filter { $0.confidence >= 0.55 }.count
     }
 
     var body: some View {
@@ -190,7 +178,6 @@ struct CorrectionsContentView: View {
             refreshCorrections()
         }
         .onChange(of: searchText) { _, newValue in
-            // Debounce search input to avoid filtering on every keystroke
             searchDebouncer?.cancel()
             searchDebouncer = Just(newValue)
                 .delay(for: .milliseconds(150), scheduler: RunLoop.main)
@@ -300,7 +287,7 @@ struct CorrectionsContentView: View {
     private func confidenceBadge(_ confidence: Double) -> some View {
         let percentage = Int(confidence * 100)
         let color: Color = confidence >= 0.8 ? FW.success :
-            confidence >= 0.55 ? FW.warning : FW.textMuted
+                           confidence >= 0.55 ? FW.warning : FW.textMuted
 
         return Text("\(percentage)%")
             .font(FW.fontMonoSmall)
