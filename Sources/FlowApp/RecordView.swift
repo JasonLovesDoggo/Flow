@@ -11,10 +11,6 @@ import SwiftUI
 struct RecordView: View {
     @EnvironmentObject var appState: AppState
 
-    // Cache greeting to avoid recalculating on every render
-    @State private var cachedGreeting: String = ""
-    @State private var lastGreetingHour: Int = -1
-
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -77,9 +73,6 @@ struct RecordView: View {
             }
         }
         .background(FW.background)
-        .onAppear {
-            updateGreetingIfNeeded()
-        }
     }
 
     // MARK: - Header Section
@@ -87,7 +80,7 @@ struct RecordView: View {
     private var headerSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: FW.spacing4) {
-                Text(cachedGreeting.isEmpty ? computeGreeting() : cachedGreeting)
+                Text(greeting)
                     .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(FW.textPrimary)
 
@@ -100,15 +93,7 @@ struct RecordView: View {
         }
     }
 
-    private func updateGreetingIfNeeded() {
-        let currentHour = Calendar.current.component(.hour, from: Date())
-        if currentHour != lastGreetingHour {
-            lastGreetingHour = currentHour
-            cachedGreeting = computeGreeting()
-        }
-    }
-
-    private func computeGreeting() -> String {
+    private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
         switch hour {
         case 5 ..< 12: return "Good morning"
