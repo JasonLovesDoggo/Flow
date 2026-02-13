@@ -487,10 +487,7 @@ mod tests {
         assert_eq!(match_case("", "TEH"), "");
         assert_eq!(match_case("", ""), "");
 
-        // BUG EXPOSURE: When original is empty, .chars().all(|c| c.is_uppercase())
-        // returns true (vacuous truth), so empty original is treated as "all caps".
-        // This causes match_case("test", "") to return "TEST" instead of "test".
-        assert_eq!(match_case("test", ""), "TEST"); // Documents buggy behavior
+        assert_eq!(match_case("test", ""), "test");
     }
 
     #[test]
@@ -597,8 +594,8 @@ mod tests {
         }
 
         let (result, applied) = engine.apply_corrections("   \t\n  ");
-        // split_whitespace should produce no words
-        assert_eq!(result, "");
+        // split_whitespace produces no words, original text preserved
+        assert_eq!(result, "   \t\n  ");
         assert!(applied.is_empty());
     }
 
