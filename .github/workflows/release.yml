@@ -46,6 +46,9 @@ jobs:
         with:
           workspaces: flow-core
 
+      - name: Install cbindgen
+        run: cargo install cbindgen
+
       - name: Build Rust library for Apple Silicon (aarch64)
         run: |
           cd flow-core
