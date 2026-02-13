@@ -30,6 +30,9 @@ pub const SETTING_USE_LOCAL_TRANSCRIPTION: &str = "use_local_transcription";
 pub const SETTING_LOCAL_WHISPER_MODEL: &str = "local_whisper_model";
 /// Cloud transcription provider: "auto" (default) | "openai"
 pub const SETTING_CLOUD_TRANSCRIPTION_PROVIDER: &str = "cloud_transcription_provider";
+/// Auto-rewriting: when enabled, applies corrections and AI completion to transcriptions
+/// When disabled, returns raw transcription with only shortcuts applied
+pub const SETTING_AUTO_REWRITING_ENABLED: &str = "auto_rewriting_enabled";
 
 impl Storage {
     /// Open or create a database at the given path

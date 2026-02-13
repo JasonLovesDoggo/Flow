@@ -32,9 +32,9 @@ use crate::providers::{
 };
 use crate::shortcuts::ShortcutsEngine;
 use crate::storage::{
-    SETTING_CLOUD_TRANSCRIPTION_PROVIDER, SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY,
-    SETTING_LOCAL_WHISPER_MODEL, SETTING_OPENAI_API_KEY, SETTING_OPENROUTER_API_KEY,
-    SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
+    SETTING_AUTO_REWRITING_ENABLED, SETTING_CLOUD_TRANSCRIPTION_PROVIDER,
+    SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY, SETTING_LOCAL_WHISPER_MODEL,
+    SETTING_OPENAI_API_KEY, SETTING_OPENROUTER_API_KEY, SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
 };
 use crate::types::{Shortcut, Transcription, TranscriptionHistoryEntry, TranscriptionStatus};
 
@@ -580,6 +580,15 @@ fn transcribe_with_audio(
         .map(|s| s == "true")
         .unwrap_or(false);
 
+    // Check if auto-rewriting is enabled (default: true)
+    let auto_rewriting_enabled = handle
+        .storage
+        .get_setting(SETTING_AUTO_REWRITING_ENABLED)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(true);
+
     // Build mode string for worker
     let mode_str = match mode {
         WritingMode::Formal => "formal",
@@ -589,7 +598,8 @@ fn transcribe_with_audio(
     };
 
     // For cloud transcription (auto mode), worker handles everything
-    let completion_params = if !use_local_transcription {
+    // But skip completion if auto-rewriting is disabled
+    let completion_params = if !use_local_transcription && auto_rewriting_enabled {
         log_with_time!("🚀 [RUST] Using auto mode (worker handles transcription+completion)");
         Some(TranscriptionCompletionParams {
             mode: mode_str.to_string(),
@@ -597,6 +607,9 @@ fn transcribe_with_audio(
             shortcuts_triggered: Vec::new(),
             voice_instruction: None, // Worker auto-detects from transcription
         })
+    } else if !auto_rewriting_enabled {
+        log_with_time!("📝 [RUST] Auto-rewriting disabled, returning raw transcription");
+        None
     } else {
         None
     };
@@ -610,24 +623,33 @@ fn transcribe_with_audio(
         transcription_provider.transcribe(request).await
     })?;
 
-    // Process shortcuts and corrections on raw transcription
+    // Process shortcuts (always applied) and corrections (only if auto-rewriting enabled)
     let (text_with_shortcuts, triggered) = handle.shortcuts.process(&transcription.text);
-    let (text_with_corrections, _applied) = handle.learning.apply_corrections(&text_with_shortcuts);
 
-    // Use worker completion if available, otherwise use corrected transcription
-    let processed_text = if let Some(completed_text) = transcription.completed_text {
+    // Determine final processed text based on auto-rewriting setting
+    let processed_text = if !auto_rewriting_enabled {
+        // Auto-rewriting disabled: return transcription with shortcuts only (no corrections, no AI)
+        log_with_time!(
+            "📝 [RUST] Auto-rewriting disabled - returning text with shortcuts only: {} chars",
+            text_with_shortcuts.len()
+        );
+        text_with_shortcuts.clone()
+    } else if let Some(completed_text) = transcription.completed_text {
+        // Worker completion available (cloud mode with auto-rewriting)
         log_with_time!(
             "✅ [RUST/AI] Worker completion received - Output: {} chars",
             completed_text.len()
         );
         completed_text
     } else {
-        // Local transcription mode - use corrected text directly (no separate completion)
+        // Local transcription mode or cloud without completion - apply corrections
+        let (text_with_corrections, _applied) =
+            handle.learning.apply_corrections(&text_with_shortcuts);
         log_with_time!(
             "📝 [RUST] Local transcription mode - using corrected text: {} chars",
             text_with_corrections.len()
         );
-        text_with_corrections.clone()
+        text_with_corrections
     };
 
     // Suppress unused warning for triggered shortcuts (used by worker)
@@ -2147,6 +2169,58 @@ pub extern "C" fn flow_get_cloud_transcription_provider(handle: *mut FlowHandle)
         },
         _ => 1, // default to Auto
     }
+}
+
+// ============ Auto-Rewriting Setting ============
+
+/// Set whether auto-rewriting is enabled
+/// When disabled, transcriptions are returned as-is (with shortcuts only, no corrections or AI)
+///
+/// # Arguments
+/// - `handle` - Engine handle
+/// - `enabled` - Whether auto-rewriting should be enabled
+///
+/// # Returns
+/// true on success
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_set_auto_rewriting_enabled(handle: *mut FlowHandle, enabled: bool) -> bool {
+    let handle = unsafe { &mut *handle };
+
+    let value = if enabled { "true" } else { "false" };
+
+    if let Err(e) = handle
+        .storage
+        .set_setting(SETTING_AUTO_REWRITING_ENABLED, value)
+    {
+        set_last_error(
+            handle,
+            format!("Failed to save auto-rewriting setting: {}", e),
+        );
+        return false;
+    }
+
+    debug!("Auto-rewriting set to: {}", enabled);
+    true
+}
+
+/// Get whether auto-rewriting is enabled
+///
+/// # Arguments
+/// - `handle` - Engine handle
+///
+/// # Returns
+/// true if auto-rewriting is enabled, false otherwise (default: true)
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_get_auto_rewriting_enabled(handle: *mut FlowHandle) -> bool {
+    let handle = unsafe { &*handle };
+
+    handle
+        .storage
+        .get_setting(SETTING_AUTO_REWRITING_ENABLED)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(true) // default to enabled
 }
 
 // ============ Alignment and Edit Detection ============

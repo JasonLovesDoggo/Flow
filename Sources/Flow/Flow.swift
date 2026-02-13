@@ -765,6 +765,25 @@ public final class Flow: @unchecked Sendable {
         return CloudTranscriptionProvider(rawValue: rawValue)
     }
 
+    // MARK: - Auto-Rewriting
+
+    /// Set whether auto-rewriting is enabled
+    /// When disabled, transcriptions are returned as-is (with shortcuts only, no corrections or AI)
+    /// - Parameter enabled: Whether auto-rewriting should be enabled
+    /// - Returns: true on success
+    @discardableResult
+    public func setAutoRewritingEnabled(_ enabled: Bool) -> Bool {
+        guard let handle = handle else { return false }
+        return flow_set_auto_rewriting_enabled(handle, enabled)
+    }
+
+    /// Get whether auto-rewriting is enabled
+    /// When disabled, transcriptions are returned as-is (with shortcuts only, no corrections or AI)
+    public var isAutoRewritingEnabled: Bool {
+        guard let handle = handle else { return true }
+        return flow_get_auto_rewriting_enabled(handle)
+    }
+
     // MARK: - Alignment and Edit Detection
 
     /// Align original and edited text, extract correction candidates

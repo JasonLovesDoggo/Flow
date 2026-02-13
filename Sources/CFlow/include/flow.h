@@ -379,6 +379,30 @@ bool flow_set_cloud_transcription_provider(struct FlowHandle *handle, uint8_t pr
 uint8_t flow_get_cloud_transcription_provider(struct FlowHandle *handle);
 
 /**
+ * Set whether auto-rewriting is enabled
+ * When disabled, transcriptions are returned as-is (with shortcuts only, no corrections or AI)
+ *
+ * # Arguments
+ * - `handle` - Engine handle
+ * - `enabled` - Whether auto-rewriting should be enabled
+ *
+ * # Returns
+ * true on success
+ */
+bool flow_set_auto_rewriting_enabled(struct FlowHandle *handle, bool enabled);
+
+/**
+ * Get whether auto-rewriting is enabled
+ *
+ * # Arguments
+ * - `handle` - Engine handle
+ *
+ * # Returns
+ * true if auto-rewriting is enabled, false otherwise (default: true)
+ */
+bool flow_get_auto_rewriting_enabled(struct FlowHandle *handle);
+
+/**
  * Align original and edited text, extract correction candidates
  * Returns JSON with alignment result (caller must free with flow_free_string)
  * JSON format:

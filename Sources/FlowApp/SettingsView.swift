@@ -361,8 +361,10 @@ private extension CompletionProvider {
 // MARK: - General Section
 
 private struct GeneralSection: View {
+    @EnvironmentObject var appState: AppState
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("audioFeedbackEnabled") private var audioFeedbackEnabled = false
+    @State private var autoRewritingEnabled = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: FW.spacing12) {
@@ -372,16 +374,56 @@ private struct GeneralSection: View {
             VStack(spacing: FW.spacing16) {
                 FWToggle(isOn: $launchAtLogin, label: "Launch at login")
                 FWToggle(isOn: $audioFeedbackEnabled, label: "Audio feedback")
+                FWToggle(isOn: $autoRewritingEnabled, label: "Auto-rewrite output")
+                    .onChange(of: autoRewritingEnabled) { _, newValue in
+                        _ = appState.engine.setAutoRewritingEnabled(newValue)
+                    }
             }
             .fwSection()
+
+            Text("When disabled, transcriptions are returned as-is without corrections or AI completion.")
+                .font(.caption)
+                .foregroundStyle(FW.textMuted)
+                .padding(.horizontal, FW.spacing4)
+        }
+        .onAppear {
+            autoRewritingEnabled = appState.engine.isAutoRewritingEnabled
         }
     }
 }
 
 // MARK: - Keyboard Section
 
+/// Hotkey activation mode: hold to record or toggle on/off
+public enum HotkeyActivationMode: String, CaseIterable {
+    case hold = "hold"
+    case toggle = "toggle"
+
+    var displayName: String {
+        switch self {
+        case .hold: return "Hold"
+        case .toggle: return "Toggle"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .hold: return "Hold key to record, release to stop"
+        case .toggle: return "Press to start, press again to stop"
+        }
+    }
+}
+
 private struct KeyboardSection: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("hotkeyActivationMode") private var activationMode: String = HotkeyActivationMode.hold.rawValue
+
+    private var selectedMode: Binding<HotkeyActivationMode> {
+        Binding(
+            get: { HotkeyActivationMode(rawValue: activationMode) ?? .hold },
+            set: { activationMode = $0.rawValue }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: FW.spacing12) {
@@ -416,6 +458,47 @@ private struct KeyboardSection: View {
                             appState.setHotkey(Hotkey.defaultHotkey)
                         }
                         .buttonStyle(FWGhostButtonStyle())
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: FW.spacing8) {
+                    Text("Activation")
+                        .font(.subheadline)
+                        .foregroundStyle(FW.textSecondary)
+
+                    HStack(spacing: 0) {
+                        ForEach(HotkeyActivationMode.allCases, id: \.self) { mode in
+                            Button {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    selectedMode.wrappedValue = mode
+                                }
+                            } label: {
+                                VStack(spacing: 2) {
+                                    Text(mode.displayName)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(mode == .hold ? "press & hold" : "tap to toggle")
+                                        .font(.caption2)
+                                        .foregroundStyle(selectedMode.wrappedValue == mode ? FW.textSecondary : FW.textMuted)
+                                }
+                                .foregroundStyle(selectedMode.wrappedValue == mode ? FW.textPrimary : FW.textSecondary)
+                                .padding(.horizontal, FW.spacing16)
+                                .padding(.vertical, FW.spacing8)
+                                .frame(maxWidth: .infinity)
+                                .background {
+                                    if selectedMode.wrappedValue == mode {
+                                        RoundedRectangle(cornerRadius: FW.radiusSmall - 2)
+                                            .fill(FW.surface)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(3)
+                    .background {
+                        RoundedRectangle(cornerRadius: FW.radiusSmall)
+                            .fill(FW.background)
                     }
                 }
             }

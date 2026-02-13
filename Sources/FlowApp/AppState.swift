@@ -173,17 +173,38 @@ final class AppState: ObservableObject {
 
     private func handleHotkeyTrigger(_ trigger: GlobeKeyHandler.Trigger) {
         log("🎹 [HOTKEY] Trigger detected: \(trigger)")
-        switch trigger {
-        case .pressed:
-            if !isRecording {
-                startRecording()
+
+        // Check user's preferred activation mode
+        let modeString = UserDefaults.standard.string(forKey: "hotkeyActivationMode") ?? "hold"
+        let useToggleMode = modeString == "toggle"
+
+        if useToggleMode {
+            // Toggle mode: any trigger toggles recording state
+            switch trigger {
+            case .pressed:
+                // First press starts recording
+                toggleRecording()
+            case .released:
+                // Ignore release in toggle mode
+                break
+            case .toggle:
+                toggleRecording()
             }
-        case .released:
-            if isRecording {
-                stopRecording()
+        } else {
+            // Hold mode: press to start, release to stop
+            switch trigger {
+            case .pressed:
+                if !isRecording {
+                    startRecording()
+                }
+            case .released:
+                if isRecording {
+                    stopRecording()
+                }
+            case .toggle:
+                // For custom hotkeys in hold mode, treat as toggle (legacy behavior)
+                toggleRecording()
             }
-        case .toggle:
-            toggleRecording()
         }
     }
 
