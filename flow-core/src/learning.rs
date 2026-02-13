@@ -15,9 +15,6 @@ use crate::types::{Correction, CorrectionSource};
 /// Minimum similarity threshold for considering a word pair as a typo correction
 const MIN_SIMILARITY: f64 = 0.7;
 
-/// Minimum similarity for word alignment (lower threshold for pairing)
-const MIN_ALIGNMENT_SIMILARITY: f64 = 0.5;
-
 /// Minimum confidence to auto-apply a correction (lowered to 0.55 to trigger at ~3 occurrences instead of ~5)
 const MIN_AUTO_APPLY_CONFIDENCE: f32 = 0.55;
 
@@ -157,41 +154,30 @@ impl LearningEngine {
             return (text.to_string(), Vec::new());
         }
 
-        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut words: Vec<String> = text.split_whitespace().map(String::from).collect();
+        let mut applied = Vec::new();
 
-        // Early exit if no words
-        if words.is_empty() {
-            return (text.to_string(), Vec::new());
-        }
-
-        // Pre-allocate with reasonable capacity
-        let mut applied = Vec::with_capacity(4);
-        let mut result_words: Vec<String> = Vec::with_capacity(words.len());
-        let min_conf = self.min_confidence;
-
-        for (i, word) in words.iter().enumerate() {
+        for (i, word) in words.iter_mut().enumerate() {
             let word_lower = word.to_lowercase();
 
-            if let Some(correction) = cache.get(&word_lower) {
-                if correction.confidence >= min_conf {
-                    // preserve case pattern if possible
-                    let corrected = match_case(&correction.corrected, word);
+            if let Some(correction) = cache.get(&word_lower)
+                && correction.confidence >= self.min_confidence
+            {
+                let original = word.clone();
 
-                    applied.push(AppliedCorrection {
-                        original: word.to_string(),
-                        corrected: corrected.clone(),
-                        confidence: correction.confidence,
-                        position: i,
-                    });
+                // preserve case pattern if possible
+                *word = match_case(&correction.corrected, &original);
 
-                    result_words.push(corrected);
-                    continue;
-                }
+                applied.push(AppliedCorrection {
+                    original,
+                    corrected: word.clone(),
+                    confidence: correction.confidence,
+                    position: i,
+                });
             }
-            result_words.push(word.to_string());
         }
 
-        let result = result_words.join(" ");
+        let result = words.join(" ");
 
         if !applied.is_empty() {
             debug!("Applied {} corrections to text", applied.len());
@@ -288,26 +274,22 @@ pub struct AppliedCorrection {
 }
 
 /// Align words from two texts using a simple diff algorithm
-/// Optimized with early exits and reduced redundant similarity calculations
 fn align_words<'a>(original: &[&'a str], edited: &[&'a str]) -> Vec<(&'a str, &'a str)> {
-    // Early exit for empty inputs
     if original.is_empty() || edited.is_empty() {
         return Vec::new();
     }
 
-    // Pre-allocate with expected capacity (most words will pair)
-    let mut pairs = Vec::with_capacity(original.len().min(edited.len()));
+    let mut pairs = Vec::new();
 
+    // simple approach: match by position with some tolerance for insertions/deletions
     let mut orig_idx = 0;
     let mut edit_idx = 0;
-    let orig_len = original.len();
-    let edit_len = edited.len();
 
-    while orig_idx < orig_len && edit_idx < edit_len {
+    while orig_idx < original.len() && edit_idx < edited.len() {
         let orig = original[orig_idx];
         let edit = edited[edit_idx];
 
-        // Quick check: if strings are equal, no need to compute similarity
+        // skip the Jaro-Winkler call if the strings already match
         if orig.eq_ignore_ascii_case(edit) {
             pairs.push((orig, edit));
             orig_idx += 1;
@@ -315,28 +297,35 @@ fn align_words<'a>(original: &[&'a str], edited: &[&'a str]) -> Vec<(&'a str, &'
             continue;
         }
 
-        // Compute similarity for current pair
+        // if they're similar enough, consider them a pair
         let sim = jaro_winkler(orig, edit);
-
-        if sim >= MIN_ALIGNMENT_SIMILARITY {
+        if sim >= 0.5 {
             pairs.push((orig, edit));
             orig_idx += 1;
             edit_idx += 1;
         } else {
-            // Only compute lookahead similarities if needed
-            let has_next_orig = orig_idx + 1 < orig_len;
-            let has_next_edit = edit_idx + 1 < edit_len;
+            // check if the original word was deleted (next edit word matches next orig word better)
+            let skip_orig = if orig_idx + 1 < original.len() {
+                jaro_winkler(original[orig_idx + 1], edit) > sim
+            } else {
+                false
+            };
 
-            let skip_orig = has_next_orig && jaro_winkler(original[orig_idx + 1], edit) > sim;
-            let skip_edit = has_next_edit && jaro_winkler(orig, edited[edit_idx + 1]) > sim;
+            // check if a word was inserted (current orig matches next edit word better)
+            let skip_edit = if edit_idx + 1 < edited.len() {
+                jaro_winkler(orig, edited[edit_idx + 1]) > sim
+            } else {
+                false
+            };
 
-            match (skip_orig, skip_edit) {
-                (true, false) => orig_idx += 1,
-                (false, true) => edit_idx += 1,
-                _ => {
-                    orig_idx += 1;
-                    edit_idx += 1;
-                }
+            if skip_orig && !skip_edit {
+                orig_idx += 1;
+            } else if skip_edit && !skip_orig {
+                edit_idx += 1;
+            } else {
+                // no good match, skip both
+                orig_idx += 1;
+                edit_idx += 1;
             }
         }
     }
@@ -345,48 +334,24 @@ fn align_words<'a>(original: &[&'a str], edited: &[&'a str]) -> Vec<(&'a str, &'
 }
 
 /// Try to match the case pattern of the original word
-/// Optimized to minimize allocations and iterations
-#[inline]
 fn match_case(corrected: &str, original: &str) -> String {
-    // Early exit for empty strings
-    if original.is_empty() || corrected.is_empty() {
-        return corrected.to_string();
-    }
-
-    let mut chars = original.chars();
-    let first_char = chars.next().unwrap();
-
-    // Check case pattern with single pass
-    if first_char.is_uppercase() {
-        let rest_lowercase = chars.all(|c| !c.is_alphabetic() || c.is_lowercase());
-
-        if rest_lowercase {
-            // Title case: capitalize first letter only
-            let mut result = String::with_capacity(corrected.len());
-            let mut corrected_chars = corrected.chars();
-
-            if let Some(first) = corrected_chars.next() {
-                for c in first.to_uppercase() {
-                    result.push(c);
-                }
-                for c in corrected_chars {
-                    for lc in c.to_lowercase() {
-                        result.push(lc);
-                    }
-                }
-            }
-            result
-        } else {
-            // Check if ALL CAPS
-            let all_upper = original.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
-            if all_upper {
-                corrected.to_uppercase()
-            } else {
-                corrected.to_string()
-            }
+    if original.chars().all(|c| c.is_uppercase()) {
+        // all caps
+        corrected.to_uppercase()
+    } else if original.chars().next().is_some_and(|c| c.is_uppercase())
+        && original.chars().skip(1).all(|c| c.is_lowercase())
+    {
+        // title case
+        let mut chars = corrected.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(first) => first
+                .to_uppercase()
+                .chain(chars.flat_map(|c| c.to_lowercase()))
+                .collect(),
         }
     } else {
-        // Original starts with lowercase, preserve corrected case
+        // preserve corrected case
         corrected.to_string()
     }
 }

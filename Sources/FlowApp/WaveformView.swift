@@ -31,42 +31,7 @@ struct WaveformView: View {
                 let maxHeight = size.height * 0.85
                 let minHeight = size.height * 0.15
 
-                // Update sample buffer with new audio level or decay
-                if isRecording, let level = audioLevel {
-                    DispatchQueue.main.async {
-                        sampleBuffer.append(level)
-                        // Keep buffer size at barCount
-                        if sampleBuffer.count > barCount {
-                            sampleBuffer.removeFirst()
-                        }
-                    }
-                } else if isDecaying {
-                    // Decay samples toward zero with position-based rates (left decays faster than right)
-                    DispatchQueue.main.async {
-                        let allZero = sampleBuffer.allSatisfy { $0 < 0.01 }
-                        if allZero {
-                            isDecaying = false
-                            sampleBuffer = []
-                        } else {
-                            sampleBuffer = sampleBuffer.enumerated().map { index, value in
-                                // Newer samples (right side) decay slower
-                                let position = Float(index) / Float(sampleBuffer.count)
-                                let decayRate = 0.92 + position * 0.05 // 0.92 (left) to 0.97 (right)
-                                return value * decayRate
-                            }
-                        }
-                    }
-                }
-
-                // Fill buffer for display
-                let displaySamples: [Float]
-                if sampleBuffer.count < barCount {
-                    // If buffer isn't full yet, repeat the latest sample to fill space (immediate visual feedback)
-                    let fillValue = sampleBuffer.last ?? 0.0
-                    displaySamples = Array(repeating: fillValue, count: barCount - sampleBuffer.count) + sampleBuffer
-                } else {
-                    displaySamples = Array(sampleBuffer.suffix(barCount))
-                }
+                let displaySamples = computeDisplaySamples()
 
                 // Find max in current window for normalization
                 let windowMax = displaySamples.max() ?? 0.01
@@ -108,14 +73,51 @@ struct WaveformView: View {
                 }
             }
         }
+        .onChange(of: audioLevel) { _, newLevel in
+            guard isRecording, let level = newLevel else { return }
+            sampleBuffer.append(level)
+            if sampleBuffer.count > barCount {
+                sampleBuffer.removeFirst()
+            }
+        }
         .onChange(of: isRecording) { oldValue, newValue in
             if oldValue && !newValue {
-                // Start decay animation when recording stops
                 isDecaying = true
             } else if newValue {
-                // Clear decay state when recording starts
                 isDecaying = false
             }
+        }
+        .task(id: isDecaying) {
+            guard isDecaying else { return }
+            // Decay loop: tick at ~30fps, automatically cancelled when isDecaying
+            // changes or the view disappears
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.0 / 30.0))
+                guard isDecaying else { break }
+                let allZero = sampleBuffer.allSatisfy { $0 < 0.01 }
+                if allZero {
+                    isDecaying = false
+                    sampleBuffer = []
+                } else {
+                    let count = sampleBuffer.count
+                    sampleBuffer = sampleBuffer.enumerated().map { index, value in
+                        // Newer samples (right side) decay slower
+                        let position = Float(index) / Float(max(count, 1))
+                        let decayRate: Float = 0.92 + position * 0.05 // 0.92 (left) to 0.97 (right)
+                        return value * decayRate
+                    }
+                }
+            }
+        }
+    }
+
+    private func computeDisplaySamples() -> [Float] {
+        if sampleBuffer.count < barCount {
+            // If buffer isn't full yet, repeat the latest sample to fill space (immediate visual feedback)
+            let fillValue = sampleBuffer.last ?? 0.0
+            return Array(repeating: fillValue, count: barCount - sampleBuffer.count) + sampleBuffer
+        } else {
+            return Array(sampleBuffer.suffix(barCount))
         }
     }
 
