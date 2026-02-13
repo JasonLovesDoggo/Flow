@@ -85,6 +85,24 @@ jobs:
           echo "Universal binary created:"
           lipo -info .build/Flow
 
+      - name: Build FlowHelper for Apple Silicon (arm64)
+        run: |
+          cd FlowHelper
+          swift build -c release --arch arm64
+          cp .build/arm64-apple-macosx/release/FlowHelper ../.build/FlowHelper-arm64
+
+      - name: Build FlowHelper for Intel (x86_64)
+        run: |
+          cd FlowHelper
+          swift build -c release --arch x86_64
+          cp .build/x86_64-apple-macosx/release/FlowHelper ../.build/FlowHelper-x86_64
+
+      - name: Create FlowHelper universal binary
+        run: |
+          lipo -create .build/FlowHelper-arm64 .build/FlowHelper-x86_64 -output .build/FlowHelper
+          echo "FlowHelper universal binary created:"
+          lipo -info .build/FlowHelper
+
       - name: Create .app bundle structure
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -96,10 +114,15 @@ jobs:
           # Create bundle directories
           mkdir -p "${APP_BUNDLE}/Contents/MacOS"
           mkdir -p "${APP_BUNDLE}/Contents/Resources"
+          mkdir -p "${APP_BUNDLE}/Contents/Helpers"
 
           # Copy executable
           cp .build/Flow "${APP_BUNDLE}/Contents/MacOS/Flow"
           chmod +x "${APP_BUNDLE}/Contents/MacOS/Flow"
+
+          # Copy FlowHelper
+          cp .build/FlowHelper "${APP_BUNDLE}/Contents/Helpers/FlowHelper"
+          chmod +x "${APP_BUNDLE}/Contents/Helpers/FlowHelper"
 
           # Copy resources
           if [ -f "menubar.svg" ]; then
@@ -145,6 +168,7 @@ jobs:
 
           echo "App bundle created:"
           ls -lah "${APP_BUNDLE}/Contents/MacOS/"
+          ls -lah "${APP_BUNDLE}/Contents/Helpers/"
           ls -lah "${APP_BUNDLE}/Contents/Resources/" || true
 
       - name: Ad-hoc sign app bundle

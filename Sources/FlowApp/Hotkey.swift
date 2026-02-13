@@ -6,8 +6,47 @@
 //
 
 import AppKit
-import Carbon.HIToolbox
 import Foundation
+
+// Key codes from Carbon (avoiding Carbon.HIToolbox dependency)
+// These are stable macOS virtual key codes
+enum KeyCode {
+    static let returnKey = 0x24
+    static let tab = 0x30
+    static let space = 0x31
+    static let delete = 0x33
+    static let escape = 0x35
+    static let forwardDelete = 0x75
+    static let help = 0x72
+    static let home = 0x73
+    static let end = 0x77
+    static let pageUp = 0x74
+    static let pageDown = 0x79
+    static let leftArrow = 0x7B
+    static let rightArrow = 0x7C
+    static let downArrow = 0x7D
+    static let upArrow = 0x7E
+    static let f1 = 0x7A
+    static let f2 = 0x78
+    static let f3 = 0x63
+    static let f4 = 0x76
+    static let f5 = 0x60
+    static let f6 = 0x61
+    static let f7 = 0x62
+    static let f8 = 0x64
+    static let f9 = 0x65
+    static let f10 = 0x6D
+    static let f11 = 0x67
+    static let f12 = 0x6F
+    static let f13 = 0x69
+    static let f14 = 0x6B
+    static let f15 = 0x71
+    static let f16 = 0x6A
+    static let f17 = 0x40
+    static let f18 = 0x4F
+    static let f19 = 0x50
+    static let f20 = 0x5A
+}
 
 struct Hotkey: Equatable {
     enum Kind: Equatable {
@@ -55,7 +94,7 @@ struct Hotkey: Equatable {
                 (.maskAlternate, .option),
                 (.maskShift, .shift),
                 (.maskControl, .control),
-                (.maskCommand, .command)
+                (.maskCommand, .command),
             ]
             var found: ModifierKey?
             for (flag, key) in modifiers {
@@ -94,9 +133,9 @@ struct Hotkey: Equatable {
         switch kind {
         case .globe:
             return "Fn key"
-        case .modifierOnly(let modifier):
+        case let .modifierOnly(modifier):
             return modifier.displayName
-        case .custom(_, let modifiers, let keyLabel):
+        case let .custom(_, modifiers, keyLabel):
             return "\(modifiers.displayString)\(keyLabel)"
         }
     }
@@ -132,9 +171,9 @@ struct Hotkey: Equatable {
         switch kind {
         case .globe:
             return StoredHotkey(kind: "globe")
-        case .modifierOnly(let modifier):
+        case let .modifierOnly(modifier):
             return StoredHotkey(kind: "modifierOnly", modifierKey: modifier.rawValue)
-        case .custom(let keyCode, let modifiers, let keyLabel):
+        case let .custom(keyCode, modifiers, keyLabel):
             return StoredHotkey(
                 kind: "custom",
                 keyCode: keyCode,
@@ -148,14 +187,16 @@ struct Hotkey: Equatable {
         switch stored.kind {
         case "modifierOnly":
             if let modifierKeyRaw = stored.modifierKey,
-               let modifier = ModifierKey(rawValue: modifierKeyRaw) {
+               let modifier = ModifierKey(rawValue: modifierKeyRaw)
+            {
                 return Hotkey(kind: .modifierOnly(modifier))
             }
         case "custom":
             if let keyCode = stored.keyCode,
                let modifiersRaw = stored.modifiers,
                let keyLabel = stored.keyLabel,
-               !keyLabel.isEmpty {
+               !keyLabel.isEmpty
+            {
                 return Hotkey(
                     kind: .custom(
                         keyCode: keyCode,
@@ -185,41 +226,41 @@ struct Hotkey: Equatable {
     }
 
     private static let specialKeyLabels: [Int: String] = [
-        Int(kVK_Return): "Return",
-        Int(kVK_Tab): "Tab",
-        Int(kVK_Space): "Space",
-        Int(kVK_Delete): "Delete",
-        Int(kVK_Escape): "Esc",
-        Int(kVK_ForwardDelete): "Forward Delete",
-        Int(kVK_Help): "Help",
-        Int(kVK_Home): "Home",
-        Int(kVK_End): "End",
-        Int(kVK_PageUp): "Page Up",
-        Int(kVK_PageDown): "Page Down",
-        Int(kVK_LeftArrow): "Left",
-        Int(kVK_RightArrow): "Right",
-        Int(kVK_DownArrow): "Down",
-        Int(kVK_UpArrow): "Up",
-        Int(kVK_F1): "F1",
-        Int(kVK_F2): "F2",
-        Int(kVK_F3): "F3",
-        Int(kVK_F4): "F4",
-        Int(kVK_F5): "F5",
-        Int(kVK_F6): "F6",
-        Int(kVK_F7): "F7",
-        Int(kVK_F8): "F8",
-        Int(kVK_F9): "F9",
-        Int(kVK_F10): "F10",
-        Int(kVK_F11): "F11",
-        Int(kVK_F12): "F12",
-        Int(kVK_F13): "F13",
-        Int(kVK_F14): "F14",
-        Int(kVK_F15): "F15",
-        Int(kVK_F16): "F16",
-        Int(kVK_F17): "F17",
-        Int(kVK_F18): "F18",
-        Int(kVK_F19): "F19",
-        Int(kVK_F20): "F20"
+        KeyCode.returnKey: "Return",
+        KeyCode.tab: "Tab",
+        KeyCode.space: "Space",
+        KeyCode.delete: "Delete",
+        KeyCode.escape: "Esc",
+        KeyCode.forwardDelete: "Forward Delete",
+        KeyCode.help: "Help",
+        KeyCode.home: "Home",
+        KeyCode.end: "End",
+        KeyCode.pageUp: "Page Up",
+        KeyCode.pageDown: "Page Down",
+        KeyCode.leftArrow: "Left",
+        KeyCode.rightArrow: "Right",
+        KeyCode.downArrow: "Down",
+        KeyCode.upArrow: "Up",
+        KeyCode.f1: "F1",
+        KeyCode.f2: "F2",
+        KeyCode.f3: "F3",
+        KeyCode.f4: "F4",
+        KeyCode.f5: "F5",
+        KeyCode.f6: "F6",
+        KeyCode.f7: "F7",
+        KeyCode.f8: "F8",
+        KeyCode.f9: "F9",
+        KeyCode.f10: "F10",
+        KeyCode.f11: "F11",
+        KeyCode.f12: "F12",
+        KeyCode.f13: "F13",
+        KeyCode.f14: "F14",
+        KeyCode.f15: "F15",
+        KeyCode.f16: "F16",
+        KeyCode.f17: "F17",
+        KeyCode.f18: "F18",
+        KeyCode.f19: "F19",
+        KeyCode.f20: "F20",
     ]
 }
 

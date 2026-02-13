@@ -29,7 +29,7 @@ final class RecordingIndicatorWindow {
         panel.ignoresMouseEvents = true
         panel.setFrame(NSRect(x: 0, y: 0, width: 400, height: 32), display: false)
 
-        self.window = panel
+        window = panel
         positionWindow()
     }
 
@@ -41,6 +41,8 @@ final class RecordingIndicatorWindow {
         // Small delay to ensure layout is settled before animating
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self else { return }
+            // Reposition after layout settles to fix first-show centering
+            self.positionWindow()
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.35
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -50,7 +52,7 @@ final class RecordingIndicatorWindow {
     }
 
     func hide() {
-        NSAnimationContext.runAnimationGroup({ context in
+        NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.4
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
@@ -59,13 +61,13 @@ final class RecordingIndicatorWindow {
             var frame = window.frame
             frame.origin.y -= 15
             window.animator().setFrame(frame, display: true)
-        }, completionHandler: {
+        } completionHandler: {
             self.window.orderOut(nil)
             self.window.alphaValue = 1
             Task { @MainActor in
                 self.positionWindow() // Reset position for next show
             }
-        })
+        }
     }
 
     private func positionWindow() {

@@ -142,7 +142,8 @@ struct ShortcutsContentView: View {
         if let raw = appState.engine.shortcuts {
             shortcuts = raw.compactMap { dict in
                 guard let trigger = dict["trigger"] as? String,
-                      let replacement = dict["replacement"] as? String else {
+                      let replacement = dict["replacement"] as? String
+                else {
                     return nil
                 }
                 let useCount = dict["use_count"] as? Int ?? 0

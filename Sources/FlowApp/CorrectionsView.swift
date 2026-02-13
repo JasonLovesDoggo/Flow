@@ -313,7 +313,7 @@ struct CorrectionsContentView: View {
     }
 
     private func clearAllCorrections() {
-        let _ = appState.engine.deleteAllCorrections()
+        _ = appState.engine.deleteAllCorrections()
         withAnimation(.easeOut(duration: 0.2)) {
             corrections = []
         }

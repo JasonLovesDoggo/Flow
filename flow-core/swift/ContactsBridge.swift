@@ -5,8 +5,8 @@
 //  Provides C-compatible FFI for macOS Contacts framework access from Rust
 //
 
-import Foundation
 import Contacts
+import Foundation
 
 /// C-compatible contact result structure
 @frozen
@@ -61,7 +61,7 @@ public func contactRequestPermission() -> Bool {
         return true
     case .notDetermined:
         // Request permission asynchronously
-        store.requestAccess(for: .contacts) { granted, error in
+        store.requestAccess(for: .contacts) { _, error in
             if let error = error {
                 print("Contact permission error: \(error)")
             }
@@ -98,7 +98,7 @@ private func findContact(by displayName: String) -> CNContact? {
         CNContactFamilyNameKey,
         CNContactOrganizationNameKey,
         CNContactPhoneNumbersKey,
-        CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
+        CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
     ] as [CNKeyDescriptor]
 
     do {
@@ -133,7 +133,7 @@ public func contactGetAllJson() -> UnsafePointer<CChar>? {
         CNContactGivenNameKey,
         CNContactFamilyNameKey,
         CNContactOrganizationNameKey,
-        CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
+        CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
     ] as [CNKeyDescriptor]
 
     var results: [[String: String]] = []
@@ -141,12 +141,12 @@ public func contactGetAllJson() -> UnsafePointer<CChar>? {
     do {
         let request = CNContactFetchRequest(keysToFetch: keys)
 
-        try store.enumerateContacts(with: request) { contact, stop in
+        try store.enumerateContacts(with: request) { contact, _ in
             if let fullName = CNContactFormatter.string(from: contact, style: .fullName) {
                 let org = contact.organizationName
                 results.append([
                     "name": fullName,
-                    "organization": org
+                    "organization": org,
                 ])
             }
         }

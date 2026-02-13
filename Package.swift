@@ -27,7 +27,7 @@ let rustLibPath: String = {
 let package = Package(
     name: "Flow",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
     ],
     products: [
         .library(
@@ -40,7 +40,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/amplitude/Amplitude-iOS", from: "8.0.0")
+        .package(url: "https://github.com/amplitude/Amplitude-iOS", from: "8.0.0"),
     ],
     targets: [
         // C wrapper for the Rust FFI

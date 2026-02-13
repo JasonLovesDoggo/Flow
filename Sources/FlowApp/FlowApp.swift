@@ -11,10 +11,11 @@ import SwiftUI
 struct FlowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState()
-    
+
     private var menuBarIcon: NSImage? {
         guard let iconURL = Bundle.module.url(forResource: "menubar", withExtension: "png"),
-              let icon = NSImage(contentsOf: iconURL) else {
+              let icon = NSImage(contentsOf: iconURL)
+        else {
             return nil
         }
         icon.isTemplate = true

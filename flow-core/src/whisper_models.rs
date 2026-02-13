@@ -3,12 +3,12 @@
 use crate::error::{Error, Result};
 use std::path::PathBuf;
 
-/// Get default model directory (~/Library/Application Support/FlowWispr/models)
+/// Get default model directory (~/Library/Application Support/Flow/models)
 pub fn get_models_dir() -> Result<PathBuf> {
     let app_support = dirs::data_local_dir()
         .ok_or_else(|| Error::Config("Failed to get application support directory".to_string()))?;
 
-    let models_dir = app_support.join("FlowWispr").join("models");
+    let models_dir = app_support.join("Flow").join("models");
 
     if !models_dir.exists() {
         std::fs::create_dir_all(&models_dir)?;

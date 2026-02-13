@@ -22,6 +22,7 @@ enum WindowSize {
 
 enum FW {
     // MARK: - Colors (Adaptive Light/Dark)
+
     // Dark mode: warm charcoal palette with subtle depth
     // Light mode: clean whites with soft grey accents
 
@@ -30,7 +31,7 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.09, green: 0.086, blue: 0.082, alpha: 1)  // #171615 warm charcoal
+                ? NSColor(red: 0.09, green: 0.086, blue: 0.082, alpha: 1) // #171615 warm charcoal
                 : NSColor(red: 0.976, green: 0.973, blue: 0.969, alpha: 1) // #F9F8F7 warm white
         }
     ))
@@ -40,8 +41,8 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.125, green: 0.12, blue: 0.114, alpha: 1)  // #201F1D warm grey
-                : NSColor(red: 1, green: 1, blue: 1, alpha: 1)             // #FFFFFF
+                ? NSColor(red: 0.125, green: 0.12, blue: 0.114, alpha: 1) // #201F1D warm grey
+                : NSColor(red: 1, green: 1, blue: 1, alpha: 1) // #FFFFFF
         }
     ))
 
@@ -50,8 +51,8 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.18, green: 0.173, blue: 0.165, alpha: 1)  // #2E2C2A warm border
-                : NSColor(red: 0.91, green: 0.898, blue: 0.886, alpha: 1)  // #E8E5E2 warm light border
+                ? NSColor(red: 0.18, green: 0.173, blue: 0.165, alpha: 1) // #2E2C2A warm border
+                : NSColor(red: 0.91, green: 0.898, blue: 0.886, alpha: 1) // #E8E5E2 warm light border
         }
     ))
 
@@ -60,8 +61,8 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.95, green: 0.94, blue: 0.92, alpha: 1)    // #F2F0EB warm white
-                : NSColor(red: 0.1, green: 0.094, blue: 0.086, alpha: 1)   // #1A1816 warm black
+                ? NSColor(red: 0.95, green: 0.94, blue: 0.92, alpha: 1) // #F2F0EB warm white
+                : NSColor(red: 0.1, green: 0.094, blue: 0.086, alpha: 1) // #1A1816 warm black
         }
     ))
 
@@ -70,8 +71,8 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.65, green: 0.62, blue: 0.58, alpha: 1)    // #A69E94 warm grey
-                : NSColor(red: 0.4, green: 0.38, blue: 0.35, alpha: 1)     // #666159 warm dark grey
+                ? NSColor(red: 0.65, green: 0.62, blue: 0.58, alpha: 1) // #A69E94 warm grey
+                : NSColor(red: 0.4, green: 0.38, blue: 0.35, alpha: 1) // #666159 warm dark grey
         }
     ))
 
@@ -80,8 +81,8 @@ enum FW {
         name: nil,
         dynamicProvider: { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(red: 0.47, green: 0.45, blue: 0.42, alpha: 1)    // #78736B warm muted
-                : NSColor(red: 0.56, green: 0.53, blue: 0.5, alpha: 1)     // #8F8780 warm light muted
+                ? NSColor(red: 0.47, green: 0.45, blue: 0.42, alpha: 1) // #78736B warm muted
+                : NSColor(red: 0.56, green: 0.53, blue: 0.5, alpha: 1) // #8F8780 warm light muted
         }
     ))
 
@@ -138,21 +139,19 @@ enum FW {
 extension View {
     /// Modern card with subtle border
     func fwCard() -> some View {
-        self
-            .background {
-                RoundedRectangle(cornerRadius: FW.radiusMedium)
-                    .fill(FW.surface)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: FW.radiusMedium)
-                            .strokeBorder(FW.border, lineWidth: 1)
-                    }
-            }
+        background {
+            RoundedRectangle(cornerRadius: FW.radiusMedium)
+                .fill(FW.surface)
+                .overlay {
+                    RoundedRectangle(cornerRadius: FW.radiusMedium)
+                        .strokeBorder(FW.border, lineWidth: 1)
+                }
+        }
     }
 
     /// Section card with minimal styling
     func fwSection() -> some View {
-        self
-            .padding(FW.spacing20)
+        padding(FW.spacing20)
             .background {
                 RoundedRectangle(cornerRadius: FW.radiusMedium)
                     .fill(FW.surface)
@@ -165,8 +164,7 @@ extension View {
 
     /// Section header style (uppercase, muted, small)
     func fwSectionHeader() -> some View {
-        self
-            .font(.caption.weight(.semibold))
+        font(.caption.weight(.semibold))
             .foregroundStyle(FW.textMuted)
             .textCase(.uppercase)
             .tracking(0.5)

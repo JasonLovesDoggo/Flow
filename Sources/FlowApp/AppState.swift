@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import Carbon.HIToolbox
 import Combine
 import Flow
 import Foundation
@@ -74,24 +73,32 @@ final class AppState: ObservableObject {
     private var recordingTimer: Timer?
     private var audioLevelTimer: Timer?
     private var modelLoadingTimer: Timer?
-    private var globeKeyHandler: GlobeKeyHandler?
+    private var helperManager: HelperManager?
+    private var globeKeyHandler: GlobeKeyHandler? // Fallback if helper unavailable
     private var hotkeyCaptureMonitor: Any?
     private var hotkeyFlagsMonitor: Any?
     private var pendingModifierCapture: Hotkey.ModifierKey?
     private var appActiveObserver: NSObjectProtocol?
     private var appInactiveObserver: NSObjectProtocol?
-    private var mediaPauseState = MediaPauseState()
     private var recordingIndicator: RecordingIndicatorWindow?
     private var targetApplication: NSRunningApplication?
+    private let volumeManager = VolumeManager()
+    private var textFieldContext: TextFieldContext?
+    private var ideContext: IDEContext?
 
     private static let onboardingKey = "onboardingComplete"
 
     init() {
-        self.engine = Flow()
-        self.isConfigured = engine.isConfigured
-        self.hotkey = Hotkey.load()
-        self.isOnboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
-        self.isAccessibilityEnabled = GlobeKeyHandler.isAccessibilityAuthorized()
+        engine = Flow()
+        isConfigured = engine.isConfigured
+        hotkey = Hotkey.load()
+        isOnboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
+        isAccessibilityEnabled = GlobeKeyHandler.isAccessibilityAuthorized()
+
+        if !isAccessibilityEnabled {
+            log("⚠️ [INIT] Accessibility NOT enabled - hotkey will not work globally!")
+            log("⚠️ [INIT] Grant permission in System Settings > Privacy & Security > Accessibility")
+        }
 
         setupGlobeKey()
         setupLifecycleObserver()
@@ -123,6 +130,9 @@ final class AppState: ObservableObject {
         audioLevelTimer = nil
         modelLoadingTimer?.invalidate()
         modelLoadingTimer = nil
+        helperManager?.stop()
+        helperManager = nil
+        globeKeyHandler = nil
         endHotkeyCapture()
         recordingIndicator?.hide()
     }
@@ -130,26 +140,57 @@ final class AppState: ObservableObject {
     // MARK: - Globe Key
 
     private func setupGlobeKey() {
-        globeKeyHandler = GlobeKeyHandler(hotkey: hotkey) { trigger in
-            Task { @MainActor [weak self] in
-                self?.handleHotkeyTrigger(trigger)
+        // Use HelperManager as primary (immune to App Nap)
+        helperManager = HelperManager()
+        helperManager?.onHotkeyTriggered = { [weak self] trigger in
+            let globeTrigger: GlobeKeyHandler.Trigger = switch trigger {
+            case .pressed: .pressed
+            case .released: .released
+            case .toggle: .toggle
             }
+            self?.handleHotkeyTrigger(globeTrigger)
         }
+        helperManager?.onError = { [weak self] message in
+            self?.log("Helper error: \(message)")
+        }
+        helperManager?.updateHotkey(hotkey)
+        helperManager?.start()
     }
 
     private func handleHotkeyTrigger(_ trigger: GlobeKeyHandler.Trigger) {
         log("🎹 [HOTKEY] Trigger detected: \(trigger)")
-        switch trigger {
-        case .pressed:
-            if !isRecording {
-                startRecording()
+
+        // Check user's preferred activation mode
+        let modeString = UserDefaults.standard.string(forKey: "hotkeyActivationMode") ?? "hold"
+        let useToggleMode = modeString == "toggle"
+
+        if useToggleMode {
+            // Toggle mode: any trigger toggles recording state
+            switch trigger {
+            case .pressed:
+                // First press starts recording
+                toggleRecording()
+            case .released:
+                // Ignore release in toggle mode
+                break
+            case .toggle:
+                toggleRecording()
             }
-        case .released:
-            if isRecording {
-                stopRecording()
+        } else {
+            // Hold mode: press to start, release to stop
+            switch trigger {
+            case .pressed:
+                if !isRecording {
+                    startRecording()
+                }
+            case .released:
+                if isRecording {
+                    stopRecording()
+                }
+            case .toggle:
+                // For custom hotkeys in hold mode, treat as toggle (legacy behavior)
+                toggleRecording()
             }
-        case .toggle:
-            toggleRecording()
         }
     }
 
@@ -192,19 +233,20 @@ final class AppState: ObservableObject {
     func setHotkey(_ hotkey: Hotkey) {
         self.hotkey = hotkey
         hotkey.save()
+        helperManager?.updateHotkey(hotkey)
         globeKeyHandler?.updateHotkey(hotkey)
 
         var properties: [String: Any] = [
-            "display_name": hotkey.displayName
+            "display_name": hotkey.displayName,
         ]
 
         switch hotkey.kind {
         case .globe:
             properties["type"] = "globe"
-        case .modifierOnly(let modifier):
+        case let .modifierOnly(modifier):
             properties["type"] = "modifierOnly"
             properties["modifier"] = modifier.rawValue
-        case .custom(let keyCode, let modifiers, let keyLabel):
+        case let .custom(keyCode, modifiers, keyLabel):
             properties["type"] = "custom"
             properties["key_code"] = keyCode
             properties["key_label"] = keyLabel
@@ -219,6 +261,8 @@ final class AppState: ObservableObject {
         if started {
             isAccessibilityEnabled = true
             Analytics.shared.track("Accessibility Permission Granted")
+            // Restart helper now that we have permission
+            restartHelperIfNeeded()
         } else {
             refreshAccessibilityStatus()
         }
@@ -229,15 +273,22 @@ final class AppState: ObservableObject {
         let enabled = GlobeKeyHandler.isAccessibilityAuthorized()
         isAccessibilityEnabled = enabled
 
-        if !wasEnabled && enabled {
+        if !wasEnabled, enabled {
             Analytics.shared.track("Accessibility Permission Granted")
-        } else if wasEnabled && !enabled {
+            restartHelperIfNeeded()
+        } else if wasEnabled, !enabled {
             Analytics.shared.track("Accessibility Permission Revoked")
         }
 
         if enabled {
             _ = globeKeyHandler?.startListening(prompt: false)
         }
+    }
+
+    private func restartHelperIfNeeded() {
+        guard let manager = helperManager, !manager.isRunning else { return }
+        log("Restarting helper after accessibility permission granted")
+        manager.start()
     }
 
     func clearError() {
@@ -299,7 +350,7 @@ final class AppState: ObservableObject {
         pendingModifierCapture = nil // Key pressed, cancel any pending modifier capture
 
         let modifiers = Hotkey.Modifiers.from(nsFlags: event.modifierFlags)
-        if event.keyCode == UInt16(kVK_Escape), modifiers.isEmpty {
+        if event.keyCode == UInt16(KeyCode.escape), modifiers.isEmpty {
             endHotkeyCapture()
             return
         }
@@ -317,7 +368,7 @@ final class AppState: ObservableObject {
             (.option, .option),
             (.shift, .shift),
             (.control, .control),
-            (.command, .command)
+            (.command, .command),
         ]
 
         // Count how many modifiers are currently pressed
@@ -429,53 +480,102 @@ final class AppState: ObservableObject {
     }
 
     func startRecording() {
+        let totalStart = CFAbsoluteTimeGetCurrent()
+
+        // Refresh accessibility status before recording
+        let t0 = CFAbsoluteTimeGetCurrent()
+        refreshAccessibilityStatus()
+        log("⏱️ [TIMING] refreshAccessibilityStatus: \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000))ms")
+
+        guard isAccessibilityEnabled else {
+            errorMessage = "Accessibility permission required for hotkey. Enable in System Settings > Privacy & Security > Accessibility."
+            log("⚠️ [RECORDING] Blocked - Accessibility not enabled")
+            return
+        }
+
         guard engine.isConfigured else {
             errorMessage = "Please configure your API key in Settings"
             return
         }
 
         targetApplication = NSWorkspace.shared.frontmostApplication
+
         log("🎤 [RECORDING] Starting recording - App: \(currentApp), Mode: \(currentMode.displayName)")
-        pauseMediaPlayback()
-        if engine.startRecording() {
-            isRecording = true
-            isProcessing = false
-            updateRecordingIndicatorVisibility()
-            recordingDuration = 0
-            log("✅ [RECORDING] Recording started successfully")
 
-            Analytics.shared.track("Recording Started", eventProperties: [
-                "app_name": currentApp,
-                "app_category": currentCategory.rawValue,
-                "writing_mode": currentMode.rawValue
-            ])
+        // Update UI immediately for instant feedback
+        isRecording = true
+        isProcessing = false
+        updateRecordingIndicatorVisibility()
+        recordingDuration = 0
+        log("⏱️ [TIMING] UI updated: \(Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000))ms")
 
-            recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                Task { @MainActor [weak self] in
-                    guard let self, self.isRecording else { return }
-                    self.recordingDuration += 100
+        // Play start sound
+        AudioFeedback.shared.playStart()
+
+        // Start engine and setup timers in a task so UI can update first
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            let t = CFAbsoluteTimeGetCurrent()
+            self.volumeManager.muteForRecording()
+            self.log("⏱️ [TIMING] muteForRecording: \(Int((CFAbsoluteTimeGetCurrent() - t) * 1000))ms")
+
+            let engineStart = CFAbsoluteTimeGetCurrent()
+            if self.engine.startRecording() {
+                self.log("⏱️ [TIMING] engine.startRecording: \(Int((CFAbsoluteTimeGetCurrent() - engineStart) * 1000))ms")
+                self.log("⏱️ [TIMING] TOTAL: \(Int((CFAbsoluteTimeGetCurrent() - totalStart) * 1000))ms")
+
+                // Extract context in background
+                Task.detached { [weak self] in
+                    let textContext = AccessibilityContext.extractFocusedTextContext()
+                    let ide = AccessibilityContext.extractIDEContext()
+                    if let self = self {
+                        await MainActor.run {
+                            self.textFieldContext = textContext
+                            self.ideContext = ide
+                        }
+                    }
                 }
-            }
 
-            audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 1/30, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self, self.isRecording else { return }
-                    let newLevel = self.engine.audioLevel
-                    self.audioLevel = newLevel
-                    // Smooth the audio level with exponential moving average
-                    // Higher smoothing factor = smoother but slower response
-                    let smoothingFactor: Float = 0.3
-                    self.smoothedAudioLevel = self.smoothedAudioLevel * (1 - smoothingFactor) + newLevel * smoothingFactor
+                Analytics.shared.track("Recording Started", eventProperties: [
+                    "app_name": self.currentApp,
+                    "app_category": self.currentCategory.rawValue,
+                    "writing_mode": self.currentMode.rawValue,
+                ])
+
+                self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isRecording else { return }
+                        self.recordingDuration += 100
+                    }
                 }
+
+                self.audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isRecording else { return }
+                        let newLevel = self.engine.audioLevel
+                        self.audioLevel = newLevel
+                        let smoothingFactor: Float = 0.8
+                        self.smoothedAudioLevel = self.smoothedAudioLevel * (1 - smoothingFactor) + newLevel * smoothingFactor
+                    }
+                }
+            } else {
+                // Revert UI state
+                self.isRecording = false
+                self.updateRecordingIndicatorVisibility()
+                self.errorMessage = self.engine.lastError ?? "Failed to start recording"
+                AudioFeedback.shared.playError()
+                self.volumeManager.restoreAfterRecording()
             }
-        } else {
-            errorMessage = engine.lastError ?? "Failed to start recording"
-            resumeMediaPlayback()
         }
     }
 
     func stopRecording() {
         log("⏹️ [RECORDING] Stopping recording - Duration: \(recordingDuration)ms")
+
+        // Play stop sound immediately so user gets instant feedback
+        AudioFeedback.shared.playStop()
+
         recordingTimer?.invalidate()
         recordingTimer = nil
         audioLevelTimer?.invalidate()
@@ -486,18 +586,14 @@ final class AppState: ObservableObject {
         let duration = engine.stopRecording()
         isRecording = false
 
-        log("⏳ [RESUME] Scheduling music resume in 1.95s...")
-        // Wait 1.95s before resuming music to let CoreAudio settle after mic release
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.95) { [weak self] in
-            self?.log("▶️ [RESUME] Resuming music playback")
-            self?.resumeMediaPlayback()
-        }
+        // Restore volume immediately (was muted to prevent feedback)
+        volumeManager.restoreAfterRecording()
 
         if duration > 0 {
             log("✅ [RECORDING] Recording stopped successfully - Duration: \(duration)ms")
             Analytics.shared.track("Recording Stopped", eventProperties: [
                 "duration_ms": recordingDuration,
-                "app_name": currentApp
+                "app_name": currentApp,
             ])
             setProcessing(true)
             transcribe()
@@ -505,7 +601,7 @@ final class AppState: ObservableObject {
             log("⚠️ [RECORDING] Recording cancelled (too short)")
             Analytics.shared.track("Recording Cancelled", eventProperties: [
                 "duration_ms": recordingDuration,
-                "app_name": currentApp
+                "app_name": currentApp,
             ])
             updateRecordingIndicatorVisibility()
         }
@@ -541,7 +637,7 @@ final class AppState: ObservableObject {
                         "app_category": appCategory.rawValue,
                         "writing_mode": mode.rawValue,
                         "duration_ms": duration,
-                        "text_length": text.count
+                        "text_length": text.count,
                     ])
 
                     self.activateTargetAppIfNeeded()
@@ -555,10 +651,13 @@ final class AppState: ObservableObject {
                     self.log("❌ [TRANSCRIBE] Transcription failed: \(errorMsg)")
                     self.errorMessage = errorMsg
 
+                    // Play error sound to alert user
+                    AudioFeedback.shared.playError()
+
                     Analytics.shared.track("Transcription Failed", eventProperties: [
                         "app_name": appName,
                         "error": errorMsg,
-                        "duration_ms": duration
+                        "duration_ms": duration,
                     ])
 
                     self.refreshHistory()
@@ -573,7 +672,7 @@ final class AppState: ObservableObject {
         let appName = currentApp
 
         Analytics.shared.track("Transcription Retry Attempted", eventProperties: [
-            "app_name": appName
+            "app_name": appName,
         ])
 
         Task.detached { [weak self] in
@@ -592,7 +691,7 @@ final class AppState: ObservableObject {
 
                     Analytics.shared.track("Transcription Retry Succeeded", eventProperties: [
                         "app_name": appName,
-                        "text_length": text.count
+                        "text_length": text.count,
                     ])
 
                     self.activateTargetAppIfNeeded()
@@ -605,9 +704,11 @@ final class AppState: ObservableObject {
                     let errorMsg = self.engine.lastError ?? "Retry failed"
                     self.errorMessage = errorMsg
 
+                    AudioFeedback.shared.playError()
+
                     Analytics.shared.track("Transcription Retry Failed", eventProperties: [
                         "app_name": appName,
-                        "error": errorMsg
+                        "error": errorMsg,
                     ])
 
                     self.refreshHistory()
@@ -632,7 +733,7 @@ final class AppState: ObservableObject {
 
         Analytics.shared.track("Text Pasted", eventProperties: [
             "target_app": targetApplication?.localizedName ?? "Unknown",
-            "text_length": NSPasteboard.general.string(forType: .string)?.count ?? 0
+            "text_length": NSPasteboard.general.string(forType: .string)?.count ?? 0,
         ])
 
         // Start monitoring for edits to learn from user corrections
@@ -722,7 +823,7 @@ final class AppState: ObservableObject {
             Analytics.shared.track("Writing Mode Changed", eventProperties: [
                 "mode": mode.rawValue,
                 "app_name": targetAppName,
-                "app_category": targetAppCategory.rawValue
+                "app_category": targetAppCategory.rawValue,
             ])
         }
     }
@@ -734,7 +835,7 @@ final class AppState: ObservableObject {
         if result {
             Analytics.shared.track("Shortcut Added", eventProperties: [
                 "trigger_length": trigger.count,
-                "replacement_length": replacement.count
+                "replacement_length": replacement.count,
             ])
         }
         return result
@@ -766,63 +867,5 @@ final class AppState: ObservableObject {
 
     var totalWordsDictated: Int {
         (engine.stats?["total_words_dictated"] as? Int) ?? 0
-    }
-
-    private struct MediaPauseState {
-        var musicWasPlaying = false
-        var spotifyWasPlaying = false
-    }
-
-    private func pauseMediaPlayback() {
-        mediaPauseState.musicWasPlaying = pauseIfPlaying(app: "Music")
-        mediaPauseState.spotifyWasPlaying = pauseIfPlaying(app: "Spotify")
-    }
-
-    private func resumeMediaPlayback() {
-        if mediaPauseState.musicWasPlaying {
-            resumeApp(app: "Music")
-        }
-        if mediaPauseState.spotifyWasPlaying {
-            resumeApp(app: "Spotify")
-        }
-        mediaPauseState = MediaPauseState()
-    }
-
-    private func pauseIfPlaying(app: String) -> Bool {
-        let script = """
-        tell application \"\(app)\"
-            if it is running then
-                if player state is playing then
-                    pause
-                    return \"playing\"
-                end if
-            end if
-        end tell
-        return \"\"
-        """
-
-        return runAppleScript(script) == "playing"
-    }
-
-    private func resumeApp(app: String) {
-        let script = """
-        tell application \"\(app)\"
-            if it is running then
-                play
-            end if
-        end tell
-        """
-
-        _ = runAppleScript(script)
-    }
-
-    private func runAppleScript(_ script: String) -> String? {
-        guard let appleScript = NSAppleScript(source: script) else { return nil }
-        var error: NSDictionary?
-        let result = appleScript.executeAndReturnError(&error)
-        if error != nil {
-            return nil
-        }
-        return result.stringValue
     }
 }

@@ -1,0 +1,59 @@
+name: Validate
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate Rust Tests & Swift Build
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cbindgen for C header generation
+        run: cargo install cbindgen
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flow-core
+
+      - name: Run Rust tests
+        run: |
+          cd flow-core
+          cargo test --lib
+
+      - name: Build Rust library
+        run: |
+          cd flow-core
+          cargo build
+
+      - name: Verify C header is up-to-date
+        run: |
+          # Check that the generated header matches what's in the repo
+          if ! git diff --quiet Sources/CFlow/include/flow.h; then
+            echo "ERROR: C header is out of sync with Rust FFI"
+            echo "Generated header differs from committed version."
+            echo "This likely means new FFI functions were added without updating the header."
+            echo ""
+            echo "Differences:"
+            git diff Sources/CFlow/include/flow.h
+            exit 1
+          fi
+
+      - name: Build FlowHelper
+        run: |
+          cd FlowHelper
+          swift build
+
+      - name: Build Swift package
+        run: |
+          swift build

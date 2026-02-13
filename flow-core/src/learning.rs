@@ -154,30 +154,42 @@ impl LearningEngine {
             return (text.to_string(), Vec::new());
         }
 
-        let mut words: Vec<String> = text.split_whitespace().map(String::from).collect();
-        let mut applied = Vec::new();
+        let words: Vec<&str> = text.split_whitespace().collect();
 
-        for (i, word) in words.iter_mut().enumerate() {
-            let word_lower = word.to_lowercase();
+        if words.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
 
-            if let Some(correction) = cache.get(&word_lower)
+        let mut applied = Vec::with_capacity(4);
+        let mut result_words: Vec<String> = Vec::with_capacity(words.len());
+
+        for (i, word) in words.iter().enumerate() {
+            let (prefix, core, suffix) = strip_punctuation(word);
+            let core_lower = core.to_lowercase();
+
+            if let Some(correction) = cache.get(&core_lower)
                 && correction.confidence >= self.min_confidence
             {
-                let original = word.clone();
-
-                // preserve case pattern if possible
-                *word = match_case(&correction.corrected, &original);
+                let corrected = match_case(&correction.corrected, core);
 
                 applied.push(AppliedCorrection {
-                    original,
-                    corrected: word.clone(),
+                    original: core.to_string(),
+                    corrected: corrected.clone(),
                     confidence: correction.confidence,
                     position: i,
                 });
+
+                let mut full = String::with_capacity(prefix.len() + corrected.len() + suffix.len());
+                full.push_str(prefix);
+                full.push_str(&corrected);
+                full.push_str(suffix);
+                result_words.push(full);
+            } else {
+                result_words.push(word.to_string());
             }
         }
 
-        let result = words.join(" ");
+        let result = result_words.join(" ");
 
         if !applied.is_empty() {
             debug!("Applied {} corrections to text", applied.len());
@@ -333,8 +345,26 @@ fn align_words<'a>(original: &[&'a str], edited: &[&'a str]) -> Vec<(&'a str, &'
     pairs
 }
 
+/// Split a word into (leading_punctuation, core_word, trailing_punctuation).
+/// e.g. "\"teh,\"" -> ("\"", "teh", ",\"")
+#[inline]
+fn strip_punctuation(word: &str) -> (&str, &str, &str) {
+    let start = word
+        .find(|c: char| c.is_alphanumeric())
+        .unwrap_or(word.len());
+    let end = word
+        .rfind(|c: char| c.is_alphanumeric())
+        .map(|i| i + word[i..].chars().next().map_or(0, char::len_utf8))
+        .unwrap_or(start);
+    (&word[..start], &word[start..end], &word[end..])
+}
+
 /// Try to match the case pattern of the original word
 fn match_case(corrected: &str, original: &str) -> String {
+    if original.is_empty() || corrected.is_empty() {
+        return corrected.to_string();
+    }
+
     if original.chars().all(|c| c.is_uppercase()) {
         // all caps
         corrected.to_uppercase()
@@ -442,5 +472,457 @@ mod tests {
         // should not be applied
         assert_eq!(result, "test foo here");
         assert!(applied.is_empty());
+    }
+
+    // ========== Additional comprehensive tests ==========
+
+    #[test]
+    fn test_match_case_empty_strings() {
+        // When corrected is empty, returns empty regardless of original's case
+        assert_eq!(match_case("", "TEH"), "");
+        assert_eq!(match_case("", ""), "");
+
+        assert_eq!(match_case("test", ""), "test");
+    }
+
+    #[test]
+    fn test_match_case_mixed_case_original() {
+        // when original has mixed case that isn't title case, preserve corrected's case
+        assert_eq!(match_case("receive", "rEcIeVe"), "receive");
+        assert_eq!(match_case("HELLO", "hElLo"), "HELLO"); // original is all caps in this context
+    }
+
+    #[test]
+    fn test_match_case_unicode() {
+        // unicode characters should not break case matching
+        assert_eq!(match_case("café", "CAFÉ"), "CAFÉ");
+        assert_eq!(match_case("naïve", "Naïve"), "Naïve");
+    }
+
+    #[test]
+    fn test_align_words_with_insertion() {
+        // when a word is inserted in the edited version
+        let original = vec!["I", "the", "mail"];
+        let edited = vec!["I", "received", "the", "mail"];
+
+        let pairs = align_words(&original, &edited);
+
+        // alignment should handle insertion gracefully
+        // the algorithm should skip "received" and align remaining words
+        assert!(!pairs.is_empty());
+    }
+
+    #[test]
+    fn test_align_words_with_deletion() {
+        // when a word is deleted in the edited version
+        let original = vec!["I", "really", "love", "mail"];
+        let edited = vec!["I", "love", "mail"];
+
+        let pairs = align_words(&original, &edited);
+
+        // should handle deletion and still align remaining words
+        assert!(!pairs.is_empty());
+    }
+
+    #[test]
+    fn test_align_words_completely_different() {
+        // completely different texts
+        let original = vec!["hello", "world"];
+        let edited = vec!["foo", "bar", "baz"];
+
+        let pairs = align_words(&original, &edited);
+
+        // should handle gracefully even if no good matches
+        // the algorithm may still produce pairs based on position
+        // just verify it doesn't panic
+        let _ = pairs;
+    }
+
+    #[test]
+    fn test_align_words_empty_inputs() {
+        let empty: Vec<&str> = vec![];
+
+        // empty original
+        let pairs = align_words(&empty, &["hello"]);
+        assert!(pairs.is_empty());
+
+        // empty edited
+        let pairs = align_words(&["hello"], &empty);
+        assert!(pairs.is_empty());
+
+        // both empty
+        let pairs = align_words(&empty, &empty);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn test_apply_corrections_empty_text() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, applied) = engine.apply_corrections("");
+        assert_eq!(result, "");
+        assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn test_apply_corrections_whitespace_only() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, applied) = engine.apply_corrections("   \t\n  ");
+        // split_whitespace produces no words, original text preserved
+        assert_eq!(result, "   \t\n  ");
+        assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn test_apply_corrections_no_cache() {
+        let engine = LearningEngine::new();
+        // cache is empty
+
+        let (result, applied) = engine.apply_corrections("this is some text");
+        assert_eq!(result, "this is some text");
+        assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn test_apply_corrections_preserves_word_order() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "aaa".to_string(),
+                CachedCorrection {
+                    corrected: "AAA".to_string(),
+                    confidence: 0.95,
+                },
+            );
+            cache.insert(
+                "bbb".to_string(),
+                CachedCorrection {
+                    corrected: "BBB".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, applied) = engine.apply_corrections("bbb comes before aaa here");
+        assert_eq!(result, "BBB comes before AAA here");
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[0].position, 0); // bbb is at position 0
+        assert_eq!(applied[1].position, 3); // aaa is at position 3
+    }
+
+    #[test]
+    fn test_has_correction() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        assert!(engine.has_correction("teh"));
+        assert!(engine.has_correction("TEH")); // case-insensitive lookup
+        assert!(engine.has_correction("Teh"));
+        assert!(!engine.has_correction("the"));
+        assert!(!engine.has_correction("xyz"));
+    }
+
+    #[test]
+    fn test_get_correction() {
+        let mut engine = LearningEngine::new();
+        engine.set_min_confidence(0.5);
+
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+            cache.insert(
+                "low".to_string(),
+                CachedCorrection {
+                    corrected: "HIGH".to_string(),
+                    confidence: 0.3, // below threshold
+                },
+            );
+        }
+
+        assert_eq!(engine.get_correction("teh"), Some("the".to_string()));
+        assert_eq!(engine.get_correction("TEH"), Some("the".to_string())); // case-insensitive
+        assert_eq!(engine.get_correction("low"), None); // below confidence threshold
+        assert_eq!(engine.get_correction("xyz"), None);
+    }
+
+    #[test]
+    fn test_get_all_corrections() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "aaa".to_string(),
+                CachedCorrection {
+                    corrected: "AAA".to_string(),
+                    confidence: 0.9,
+                },
+            );
+            cache.insert(
+                "bbb".to_string(),
+                CachedCorrection {
+                    corrected: "BBB".to_string(),
+                    confidence: 0.8,
+                },
+            );
+        }
+
+        let all = engine.get_all_corrections();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_clear_cache() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        assert_eq!(engine.cache_size(), 1);
+        engine.clear_cache();
+        assert_eq!(engine.cache_size(), 0);
+    }
+
+    #[test]
+    fn test_remove_from_cache() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+            cache.insert(
+                "recieve".to_string(),
+                CachedCorrection {
+                    corrected: "receive".to_string(),
+                    confidence: 0.9,
+                },
+            );
+        }
+
+        assert_eq!(engine.cache_size(), 2);
+        engine.remove_from_cache("teh");
+        assert_eq!(engine.cache_size(), 1);
+        assert!(!engine.has_correction("teh"));
+        assert!(engine.has_correction("recieve"));
+
+        // removing non-existent key is fine
+        engine.remove_from_cache("nonexistent");
+        assert_eq!(engine.cache_size(), 1);
+    }
+
+    #[test]
+    fn test_set_min_confidence_clamp() {
+        let mut engine = LearningEngine::new();
+
+        engine.set_min_confidence(-0.5);
+        assert_eq!(engine.min_confidence, 0.0);
+
+        engine.set_min_confidence(1.5);
+        assert_eq!(engine.min_confidence, 1.0);
+
+        engine.set_min_confidence(0.7);
+        assert_eq!(engine.min_confidence, 0.7);
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let engine = LearningEngine::default();
+        assert_eq!(engine.cache_size(), 0);
+        assert_eq!(engine.min_confidence, MIN_AUTO_APPLY_CONFIDENCE);
+    }
+
+    #[test]
+    fn test_similarity_boundary_cases() {
+        // exact same word
+        let sim = jaro_winkler("hello", "hello");
+        assert!(sim >= 0.99); // should be ~1.0
+
+        // one character difference
+        let sim = jaro_winkler("there", "their");
+        // these are similar but not identical
+        assert!(sim >= MIN_SIMILARITY);
+
+        // length difference boundary
+        // MAX_LENGTH_DIFF is 1, so "cat" -> "cats" should be ok
+        let len_diff = ("cat".len() as isize - "cats".len() as isize).unsigned_abs();
+        assert_eq!(len_diff, 1);
+        assert!(len_diff <= MAX_LENGTH_DIFF);
+
+        // but "cat" -> "catch" has diff of 2
+        let len_diff = ("cat".len() as isize - "catch".len() as isize).unsigned_abs();
+        assert_eq!(len_diff, 2);
+        assert!(len_diff > MAX_LENGTH_DIFF);
+    }
+
+    #[test]
+    fn test_applied_correction_struct() {
+        let correction = AppliedCorrection {
+            original: "teh".to_string(),
+            corrected: "the".to_string(),
+            confidence: 0.95,
+            position: 5,
+        };
+
+        assert_eq!(correction.original, "teh");
+        assert_eq!(correction.corrected, "the");
+        assert!((correction.confidence - 0.95).abs() < 0.001);
+        assert_eq!(correction.position, 5);
+    }
+
+    #[test]
+    fn test_learned_correction_struct() {
+        let learned = LearnedCorrection {
+            original: "recieve".to_string(),
+            corrected: "receive".to_string(),
+            similarity: 0.95,
+        };
+
+        assert_eq!(learned.original, "recieve");
+        assert_eq!(learned.corrected, "receive");
+        assert!((learned.similarity - 0.95).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_apply_corrections_case_preservation_all_caps() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, _) = engine.apply_corrections("TEH QUICK BROWN FOX");
+        assert_eq!(result, "THE QUICK BROWN FOX");
+    }
+
+    #[test]
+    fn test_apply_corrections_case_preservation_title_case() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, _) = engine.apply_corrections("Teh quick brown fox");
+        assert_eq!(result, "The quick brown fox");
+    }
+
+    #[test]
+    fn test_align_words_single_word_change() {
+        let original = vec!["hello"];
+        let edited = vec!["hallo"];
+
+        let pairs = align_words(&original, &edited);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("hello", "hallo"));
+    }
+
+    #[test]
+    fn test_align_words_same_text() {
+        let words = vec!["I", "love", "rust"];
+
+        let pairs = align_words(&words, &words);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0], ("I", "I"));
+        assert_eq!(pairs[1], ("love", "love"));
+        assert_eq!(pairs[2], ("rust", "rust"));
+    }
+
+    #[test]
+    fn test_multiple_corrections_same_word() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        // same typo appears multiple times
+        let (result, applied) = engine.apply_corrections("teh cat and teh dog");
+        assert_eq!(result, "the cat and the dog");
+        assert_eq!(applied.len(), 2);
+    }
+
+    #[test]
+    fn test_correction_with_punctuation_adjacent() {
+        let engine = LearningEngine::new();
+        {
+            let mut cache = engine.corrections.write();
+            cache.insert(
+                "teh".to_string(),
+                CachedCorrection {
+                    corrected: "the".to_string(),
+                    confidence: 0.95,
+                },
+            );
+        }
+
+        let (result, applied) = engine.apply_corrections("I saw teh, cat");
+        assert_eq!(result, "I saw the, cat");
+        assert_eq!(applied.len(), 1);
     }
 }
