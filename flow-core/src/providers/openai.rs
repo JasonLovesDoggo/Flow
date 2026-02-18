@@ -21,17 +21,19 @@ pub struct OpenAITranscriptionProvider {
     client: Client,
     api_key: Option<String>,
     model: String,
+    base_url: String,
 }
 
 impl OpenAITranscriptionProvider {
     /// Create a new provider (API key loaded from environment if not provided)
-    pub fn new(api_key: Option<String>) -> Self {
+    pub fn new(api_key: Option<String>, base_url: Option<String>) -> Self {
         let key = api_key.or_else(|| std::env::var("OPENAI_API_KEY").ok());
 
         Self {
             client: Client::new(),
             api_key: key,
             model: "whisper-1".to_string(),
+            base_url: base_url.unwrap_or_else(|| OPENAI_API_BASE.to_string()),
         }
     }
 
@@ -92,7 +94,7 @@ impl TranscriptionProvider for OpenAITranscriptionProvider {
 
         let response = self
             .client
-            .post(format!("{}/audio/transcriptions", OPENAI_API_BASE))
+            .post(format!("{}/audio/transcriptions", self.base_url))
             .header("Authorization", format!("Bearer {}", api_key))
             .multipart(form)
             .send()
@@ -140,17 +142,19 @@ pub struct OpenAICompletionProvider {
     client: Client,
     api_key: Option<String>,
     model: String,
+    base_url: String,
 }
 
 impl OpenAICompletionProvider {
     /// Create a new provider (API key loaded from environment if not provided)
-    pub fn new(api_key: Option<String>) -> Self {
+    pub fn new(api_key: Option<String>, base_url: Option<String>) -> Self {
         let key = api_key.or_else(|| std::env::var("OPENAI_API_KEY").ok());
 
         Self {
             client: Client::new(),
             api_key: key,
             model: "gpt-4o-mini".to_string(),
+            base_url: base_url.unwrap_or_else(|| OPENAI_API_BASE.to_string()),
         }
     }
 
@@ -263,7 +267,7 @@ impl CompletionProvider for OpenAICompletionProvider {
 
         let response = self
             .client
-            .post(format!("{}/chat/completions", OPENAI_API_BASE))
+            .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&chat_request)
@@ -360,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_system_prompt_building() {
-        let provider = OpenAICompletionProvider::new(None);
+        let provider = OpenAICompletionProvider::new(None, None);
 
         let prompt = provider.build_system_prompt(WritingMode::Formal, None);
         assert!(prompt.contains("professional"));
@@ -376,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_provider_not_configured() {
-        let provider = OpenAITranscriptionProvider::new(None);
+        let provider = OpenAITranscriptionProvider::new(None, None);
         // when OPENAI_API_KEY env var is not set, this should be false
         // but in tests the env might be set, so we just verify the method works
         let _ = provider.is_configured();

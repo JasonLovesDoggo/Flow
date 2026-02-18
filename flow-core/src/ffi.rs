@@ -34,7 +34,8 @@ use crate::shortcuts::ShortcutsEngine;
 use crate::storage::{
     SETTING_AUTO_REWRITING_ENABLED, SETTING_CLOUD_TRANSCRIPTION_PROVIDER,
     SETTING_COMPLETION_PROVIDER, SETTING_GEMINI_API_KEY, SETTING_LOCAL_WHISPER_MODEL,
-    SETTING_OPENAI_API_KEY, SETTING_OPENROUTER_API_KEY, SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
+    SETTING_OPENAI_API_KEY, SETTING_OPENAI_BASE_URL, SETTING_OPENROUTER_API_KEY,
+    SETTING_USE_LOCAL_TRANSCRIPTION, Storage,
 };
 use crate::types::{Shortcut, Transcription, TranscriptionHistoryEntry, TranscriptionStatus};
 
@@ -119,6 +120,12 @@ fn load_persisted_configuration(handle: &mut FlowHandle) {
         .get_setting(SETTING_OPENAI_API_KEY)
         .ok()
         .flatten();
+    let openai_base_url = handle
+        .storage
+        .get_setting(SETTING_OPENAI_BASE_URL)
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
     let gemini_key = handle
         .storage
         .get_setting(SETTING_GEMINI_API_KEY)
@@ -191,7 +198,10 @@ fn load_persisted_configuration(handle: &mut FlowHandle) {
         }
         _ => {
             debug!("Restoring OpenAI completion provider from database");
-            handle.completion = Arc::new(OpenAICompletionProvider::new(openai_key.clone()));
+            handle.completion = Arc::new(OpenAICompletionProvider::new(
+                openai_key.clone(),
+                openai_base_url.clone(),
+            ));
         }
     }
 
@@ -206,7 +216,10 @@ fn load_persisted_configuration(handle: &mut FlowHandle) {
         match saved_cloud_transcription.as_deref() {
             Some("openai") => {
                 debug!("Restoring OpenAI transcription provider from database");
-                handle.transcription = Arc::new(OpenAITranscriptionProvider::new(openai_key));
+                handle.transcription = Arc::new(OpenAITranscriptionProvider::new(
+                    openai_key,
+                    openai_base_url,
+                ));
             }
             _ => {
                 // Default to Auto (worker handles transcription + completion)
@@ -283,8 +296,8 @@ pub extern "C" fn flow_init(db_path: *const c_char) -> *mut FlowHandle {
         last_audio: Mutex::new(None),
         last_audio_sample_rate: Mutex::new(None),
         last_error: Mutex::new(None),
-        transcription: Arc::new(OpenAITranscriptionProvider::new(None)),
-        completion: Arc::new(OpenAICompletionProvider::new(None)),
+        transcription: Arc::new(OpenAITranscriptionProvider::new(None, None)),
+        completion: Arc::new(OpenAICompletionProvider::new(None, None)),
         shortcuts,
         learning,
         modes: Mutex::new(modes),
@@ -1480,9 +1493,18 @@ pub extern "C" fn flow_switch_completion_provider(handle: *mut FlowHandle, provi
     // Initialize the provider
     match provider {
         0 => {
-            handle.transcription =
-                Arc::new(OpenAITranscriptionProvider::new(Some(api_key.clone())));
-            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(api_key)));
+            let base_url = handle
+                .storage
+                .get_setting(SETTING_OPENAI_BASE_URL)
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty());
+            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(
+                Some(api_key.clone()),
+                base_url.clone(),
+            ));
+            handle.completion =
+                Arc::new(OpenAICompletionProvider::new(Some(api_key), base_url));
             debug!("Switched completion provider to OpenAI");
         }
         1 => {
@@ -1540,8 +1562,17 @@ pub extern "C" fn flow_set_completion_provider(
                 set_last_error(handle, message);
                 return false;
             }
-            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key.clone())));
-            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key)));
+            let base_url = handle
+                .storage
+                .get_setting(SETTING_OPENAI_BASE_URL)
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty());
+            handle.transcription = Arc::new(OpenAITranscriptionProvider::new(
+                Some(key.clone()),
+                base_url.clone(),
+            ));
+            handle.completion = Arc::new(OpenAICompletionProvider::new(Some(key), base_url));
             debug!("Set completion provider to OpenAI");
         }
         1 => {
@@ -1758,7 +1789,14 @@ pub extern "C" fn flow_set_transcription_mode(
         match cloud_provider.as_str() {
             "openai" => {
                 if let Ok(Some(key)) = handle.storage.get_setting(SETTING_OPENAI_API_KEY) {
-                    handle.transcription = Arc::new(OpenAITranscriptionProvider::new(Some(key)));
+                    let base_url = handle
+                        .storage
+                        .get_setting(SETTING_OPENAI_BASE_URL)
+                        .ok()
+                        .flatten()
+                        .filter(|s| !s.is_empty());
+                    handle.transcription =
+                        Arc::new(OpenAITranscriptionProvider::new(Some(key), base_url));
                     debug!("Enabled OpenAI remote transcription");
                 } else {
                     set_last_error(handle, "OpenAI API key not configured");
@@ -2393,5 +2431,81 @@ pub extern "C" fn flow_get_undoable_learned_words(handle: *mut FlowHandle) -> *m
     match CString::new(json) {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => ptr::null_mut(),
+    }
+}
+
+// ============ OpenAI Base URL ============
+
+/// Set a custom OpenAI-compatible base URL for transcription and completion
+/// Pass an empty string to reset to the default (https://api.openai.com/v1)
+/// Returns true on success
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_set_openai_base_url(handle: *mut FlowHandle, url: *const c_char) -> bool {
+    let handle = unsafe { &mut *handle };
+
+    let url_str = if url.is_null() {
+        String::new()
+    } else {
+        match unsafe { CStr::from_ptr(url) }.to_str() {
+            Ok(s) => s.trim().to_string(),
+            Err(_) => return false,
+        }
+    };
+
+    if let Err(e) = handle
+        .storage
+        .set_setting(SETTING_OPENAI_BASE_URL, &url_str)
+    {
+        set_last_error(handle, format!("Failed to save OpenAI base URL: {e}"));
+        return false;
+    }
+
+    // Update the live transcription provider only when currently using cloud OpenAI
+    let use_local = handle
+        .storage
+        .get_setting(SETTING_USE_LOCAL_TRANSCRIPTION)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    let cloud_provider = handle
+        .storage
+        .get_setting(SETTING_CLOUD_TRANSCRIPTION_PROVIDER)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "auto".to_string());
+
+    if !use_local && cloud_provider == "openai" {
+        let api_key = handle
+            .storage
+            .get_setting(SETTING_OPENAI_API_KEY)
+            .ok()
+            .flatten();
+        let base_url = if url_str.is_empty() {
+            None
+        } else {
+            Some(url_str)
+        };
+        handle.transcription = Arc::new(OpenAITranscriptionProvider::new(api_key, base_url));
+    }
+
+    clear_last_error(handle);
+    true
+}
+
+/// Get the currently configured custom OpenAI base URL
+/// Returns null if using the default (https://api.openai.com/v1)
+/// Caller must free the returned string with flow_free_string
+#[unsafe(no_mangle)]
+pub extern "C" fn flow_get_openai_base_url(handle: *mut FlowHandle) -> *mut c_char {
+    let handle = unsafe { &*handle };
+
+    match handle.storage.get_setting(SETTING_OPENAI_BASE_URL) {
+        Ok(Some(url)) if !url.is_empty() => match CString::new(url) {
+            Ok(cstr) => cstr.into_raw(),
+            Err(_) => ptr::null_mut(),
+        },
+        _ => ptr::null_mut(),
     }
 }

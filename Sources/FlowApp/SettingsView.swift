@@ -210,6 +210,8 @@ private struct APIKeysSection: View {
     @State private var existingGeminiKey: String?
     @State private var existingOpenRouterKey: String?
     @State private var showSavedFeedback = false
+    @State private var openAIBaseURL = ""
+    @State private var existingOpenAIBaseURL: String?
 
     private var currentProviderHasKey: Bool {
         currentExistingKey != nil
@@ -246,6 +248,14 @@ private struct APIKeysSection: View {
                     onSave: saveCurrentKey
                 )
 
+                if selectedProvider == .openAI {
+                    OpenAIEndpointInput(
+                        url: $openAIBaseURL,
+                        existingURL: existingOpenAIBaseURL,
+                        onSave: saveBaseURL
+                    )
+                }
+
                 HStack(spacing: FW.spacing8) {
                     Circle()
                         .fill(currentProviderHasKey ? FW.success : FW.warning)
@@ -269,6 +279,14 @@ private struct APIKeysSection: View {
         existingOpenAIKey = appState.engine.maskedOpenAIKey
         existingGeminiKey = appState.engine.maskedGeminiKey
         existingOpenRouterKey = appState.engine.maskedOpenRouterKey
+        existingOpenAIBaseURL = appState.engine.openAIBaseURL
+    }
+
+    private func saveBaseURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = appState.engine.setOpenAIBaseURL(trimmed)
+        openAIBaseURL = ""
+        existingOpenAIBaseURL = appState.engine.openAIBaseURL
     }
 
     private var currentKeyBinding: Binding<String> {
@@ -354,6 +372,40 @@ private extension CompletionProvider {
         case .openAI: return "sk-..."
         case .gemini: return "AI..."
         case .openRouter: return "sk-or-v1-..."
+        }
+    }
+}
+
+private struct OpenAIEndpointInput: View {
+    @Binding var url: String
+    let existingURL: String?
+    let onSave: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FW.spacing8) {
+            Text("Custom endpoint (optional)")
+                .font(.subheadline)
+                .foregroundStyle(FW.textSecondary)
+
+            HStack(spacing: FW.spacing12) {
+                FWTextField(
+                    text: $url,
+                    placeholder: existingURL ?? "https://api.openai.com/v1",
+                    onSubmit: { onSave(url) }
+                )
+
+                Button {
+                    onSave(url)
+                } label: {
+                    Text(url.isEmpty && existingURL != nil ? "Clear" : "Save")
+                }
+                .buttonStyle(FWSecondaryButtonStyle())
+                .disabled(url.isEmpty && existingURL == nil)
+            }
+
+            Text("Supports any OpenAI-compatible API (whisper.cpp, Ollama, Groq, etc.)")
+                .font(.caption)
+                .foregroundStyle(FW.textMuted)
         }
     }
 }

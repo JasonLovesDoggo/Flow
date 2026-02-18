@@ -452,6 +452,20 @@ bool flow_undo_learned_words(struct FlowHandle *handle);
  */
 char *flow_get_undoable_learned_words(struct FlowHandle *handle);
 
+/**
+ * Set a custom OpenAI-compatible base URL for transcription and completion
+ * Pass an empty string to reset to the default (https://api.openai.com/v1)
+ * Returns true on success
+ */
+bool flow_set_openai_base_url(struct FlowHandle *handle, const char *url);
+
+/**
+ * Get the currently configured custom OpenAI base URL
+ * Returns null if using the default (https://api.openai.com/v1)
+ * Caller must free the returned string with flow_free_string
+ */
+char *flow_get_openai_base_url(struct FlowHandle *handle);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

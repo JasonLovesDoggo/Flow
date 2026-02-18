@@ -32,6 +32,8 @@ pub const SETTING_CLOUD_TRANSCRIPTION_PROVIDER: &str = "cloud_transcription_prov
 /// Auto-rewriting: when enabled, applies corrections and AI completion to transcriptions
 /// When disabled, returns raw transcription with only shortcuts applied
 pub const SETTING_AUTO_REWRITING_ENABLED: &str = "auto_rewriting_enabled";
+/// Custom OpenAI-compatible base URL for transcription (empty = use default https://api.openai.com/v1)
+pub const SETTING_OPENAI_BASE_URL: &str = "openai_base_url";
 
 impl Storage {
     /// Open or create a database at the given path
@@ -489,7 +491,11 @@ impl Storage {
             let actual_confidence = Self::calculate_confidence(actual_occurrences as u32);
             conn.execute(
                 "UPDATE corrections SET confidence = ?1 WHERE original = ?2 AND corrected = ?3",
-                params![actual_confidence, &correction.original, &correction.corrected],
+                params![
+                    actual_confidence,
+                    &correction.original,
+                    &correction.corrected
+                ],
             )?;
             debug!(
                 "Saved correction {} -> {} (occurrences: {}, confidence: {:.2})",

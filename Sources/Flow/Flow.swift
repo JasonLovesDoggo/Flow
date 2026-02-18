@@ -765,6 +765,29 @@ public final class Flow: @unchecked Sendable {
         return CloudTranscriptionProvider(rawValue: rawValue)
     }
 
+    // MARK: - OpenAI Base URL
+
+    /// Set a custom OpenAI-compatible base URL for transcription
+    /// - Parameter url: The base URL (e.g. "http://localhost:8080/v1"). Pass empty string to reset to default.
+    /// - Returns: true on success
+    @discardableResult
+    public func setOpenAIBaseURL(_ url: String) -> Bool {
+        guard let handle = handle else { return false }
+        return url.withCString { cURL in
+            flow_set_openai_base_url(handle, cURL)
+        }
+    }
+
+    /// Get the currently configured custom OpenAI base URL
+    /// - Returns: The custom URL, or nil if using the default (https://api.openai.com/v1)
+    public var openAIBaseURL: String? {
+        guard let handle = handle else { return nil }
+        guard let cString = flow_get_openai_base_url(handle) else { return nil }
+        let string = String(cString: cString)
+        flow_free_string(cString)
+        return string
+    }
+
     // MARK: - Auto-Rewriting
 
     /// Set whether auto-rewriting is enabled
