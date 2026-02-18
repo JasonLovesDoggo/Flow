@@ -236,31 +236,12 @@ final class AppState: ObservableObject {
         helperManager?.updateHotkey(hotkey)
         globeKeyHandler?.updateHotkey(hotkey)
 
-        var properties: [String: Any] = [
-            "display_name": hotkey.displayName,
-        ]
-
-        switch hotkey.kind {
-        case .globe:
-            properties["type"] = "globe"
-        case let .modifierOnly(modifier):
-            properties["type"] = "modifierOnly"
-            properties["modifier"] = modifier.rawValue
-        case let .custom(keyCode, modifiers, keyLabel):
-            properties["type"] = "custom"
-            properties["key_code"] = keyCode
-            properties["key_label"] = keyLabel
-            properties["modifiers"] = modifiers.displayString
-        }
-
-        Analytics.shared.track("Hotkey Changed", eventProperties: properties)
     }
 
     func requestAccessibilityPermission() {
         let started = globeKeyHandler?.startListening(prompt: true) ?? false
         if started {
             isAccessibilityEnabled = true
-            Analytics.shared.track("Accessibility Permission Granted")
             // Restart helper now that we have permission
             restartHelperIfNeeded()
         } else {
@@ -274,10 +255,7 @@ final class AppState: ObservableObject {
         isAccessibilityEnabled = enabled
 
         if !wasEnabled, enabled {
-            Analytics.shared.track("Accessibility Permission Granted")
             restartHelperIfNeeded()
-        } else if wasEnabled, !enabled {
-            Analytics.shared.track("Accessibility Permission Revoked")
         }
 
         if enabled {
@@ -307,8 +285,6 @@ final class AppState: ObservableObject {
     func completeOnboarding() {
         isOnboardingComplete = true
         UserDefaults.standard.set(true, forKey: Self.onboardingKey)
-
-        Analytics.shared.track("Onboarding Completed")
     }
 
     func beginHotkeyCapture() {
@@ -537,12 +513,6 @@ final class AppState: ObservableObject {
                     }
                 }
 
-                Analytics.shared.track("Recording Started", eventProperties: [
-                    "app_name": self.currentApp,
-                    "app_category": self.currentCategory.rawValue,
-                    "writing_mode": self.currentMode.rawValue,
-                ])
-
                 self.recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                     Task { @MainActor [weak self] in
                         guard let self, self.isRecording else { return }
@@ -591,18 +561,10 @@ final class AppState: ObservableObject {
 
         if duration > 0 {
             log("✅ [RECORDING] Recording stopped successfully - Duration: \(duration)ms")
-            Analytics.shared.track("Recording Stopped", eventProperties: [
-                "duration_ms": recordingDuration,
-                "app_name": currentApp,
-            ])
             setProcessing(true)
             transcribe()
         } else {
             log("⚠️ [RECORDING] Recording cancelled (too short)")
-            Analytics.shared.track("Recording Cancelled", eventProperties: [
-                "duration_ms": recordingDuration,
-                "app_name": currentApp,
-            ])
             updateRecordingIndicatorVisibility()
         }
     }
@@ -632,14 +594,6 @@ final class AppState: ObservableObject {
                     NSPasteboard.general.setString(text, forType: .string)
                     self.log("📋 [CLIPBOARD] Text copied to clipboard")
 
-                    Analytics.shared.track("Transcription Completed", eventProperties: [
-                        "app_name": appName,
-                        "app_category": appCategory.rawValue,
-                        "writing_mode": mode.rawValue,
-                        "duration_ms": duration,
-                        "text_length": text.count,
-                    ])
-
                     self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
@@ -654,12 +608,6 @@ final class AppState: ObservableObject {
                     // Play error sound to alert user
                     AudioFeedback.shared.playError()
 
-                    Analytics.shared.track("Transcription Failed", eventProperties: [
-                        "app_name": appName,
-                        "error": errorMsg,
-                        "duration_ms": duration,
-                    ])
-
                     self.refreshHistory()
                     self.finishProcessing()
                 }
@@ -670,10 +618,6 @@ final class AppState: ObservableObject {
     func retryLastTranscription() {
         setProcessing(true)
         let appName = currentApp
-
-        Analytics.shared.track("Transcription Retry Attempted", eventProperties: [
-            "app_name": appName,
-        ])
 
         Task.detached { [weak self] in
             guard let self else { return }
@@ -689,11 +633,6 @@ final class AppState: ObservableObject {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
 
-                    Analytics.shared.track("Transcription Retry Succeeded", eventProperties: [
-                        "app_name": appName,
-                        "text_length": text.count,
-                    ])
-
                     self.activateTargetAppIfNeeded()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.pasteText()
@@ -705,11 +644,6 @@ final class AppState: ObservableObject {
                     self.errorMessage = errorMsg
 
                     AudioFeedback.shared.playError()
-
-                    Analytics.shared.track("Transcription Retry Failed", eventProperties: [
-                        "app_name": appName,
-                        "error": errorMsg,
-                    ])
 
                     self.refreshHistory()
                     self.finishProcessing()
@@ -730,11 +664,6 @@ final class AppState: ObservableObject {
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
         log("✅ [PASTE] Paste command sent successfully")
-
-        Analytics.shared.track("Text Pasted", eventProperties: [
-            "target_app": targetApplication?.localizedName ?? "Unknown",
-            "text_length": NSPasteboard.general.string(forType: .string)?.count ?? 0,
-        ])
 
         // Start monitoring for edits to learn from user corrections
         if let pastedText = lastTranscription {
@@ -788,7 +717,6 @@ final class AppState: ObservableObject {
         if engine.setCompletionProvider(provider, apiKey: trimmed) {
             isConfigured = engine.isConfigured
             errorMessage = nil
-            Analytics.shared.track("\(provider.displayName) API Key Set")
         } else {
             isConfigured = engine.isConfigured
             errorMessage = engine.lastError ?? "Failed to set \(provider.displayName) API key"
@@ -808,7 +736,6 @@ final class AppState: ObservableObject {
         if success {
             isConfigured = engine.isConfigured
             errorMessage = nil
-            Analytics.shared.track("Provider Changed", eventProperties: ["provider": provider.displayName])
         } else {
             isConfigured = engine.isConfigured
             errorMessage = engine.lastError ?? "Failed to set provider"
@@ -820,33 +747,17 @@ final class AppState: ObservableObject {
         if engine.setMode(mode, for: targetAppName) {
             currentMode = mode
             targetAppMode = mode
-            Analytics.shared.track("Writing Mode Changed", eventProperties: [
-                "mode": mode.rawValue,
-                "app_name": targetAppName,
-                "app_category": targetAppCategory.rawValue,
-            ])
         }
     }
 
     // MARK: - Shortcuts
 
     func addShortcut(trigger: String, replacement: String) -> Bool {
-        let result = engine.addShortcut(trigger: trigger, replacement: replacement)
-        if result {
-            Analytics.shared.track("Shortcut Added", eventProperties: [
-                "trigger_length": trigger.count,
-                "replacement_length": replacement.count,
-            ])
-        }
-        return result
+        return engine.addShortcut(trigger: trigger, replacement: replacement)
     }
 
     func removeShortcut(trigger: String) -> Bool {
-        let result = engine.removeShortcut(trigger: trigger)
-        if result {
-            Analytics.shared.track("Shortcut Removed")
-        }
-        return result
+        return engine.removeShortcut(trigger: trigger)
     }
 
     // MARK: - Stats

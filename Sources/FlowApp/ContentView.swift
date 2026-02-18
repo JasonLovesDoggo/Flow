@@ -103,9 +103,6 @@ struct ContentView: View {
     private func navigationItem(_ tab: AppTab) -> some View {
         Button(action: {
             appState.selectedTab = tab
-            Analytics.shared.track("Tab Changed", eventProperties: [
-                "tab": tab.rawValue,
-            ])
         }) {
             HStack(spacing: FW.spacing12) {
                 Image(systemName: tab.icon)
